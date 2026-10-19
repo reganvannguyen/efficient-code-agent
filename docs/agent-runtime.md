@@ -236,8 +236,9 @@ Failures must be equally structured: `ok: false`, stable `error_code`, and a con
 | `edit_file` | Relative path, patch or exact edit | Diff, changed paths | Validate target, patch applicability, policy |
 | `run_tests` | Approved test target or preset | Exit code, bounded stdout/stderr | Allowlist, timeout, output cap |
 | `update_context` | Edit operation, target, content | Accepted/rejected, new size | Only editable notes; size cap |
-| `read_memory` | Task-scoped memory key | Selected note content | Scope and token limits |
-| `save_memory` | Task-scoped key, content | Saved/rejected | Scope, atomic write, size cap |
+| `read_memory` | Task-scoped memory key | Selected findings/note content | Scope and token limits |
+
+`update_context` is the MVP write interface for working notes; a separate `save_memory` tool is deferred. The model-facing `update_context` request is normalized by the LLM adapter into the runtime's `context_edit` action kind. Keep the core repository tool interface common across retrieval strategies; symbol maps and ranking can initially be implemented behind `search_code` and `read_file`.
 
 ### Dispatch pipeline
 
@@ -285,7 +286,7 @@ The verifier compares claims against **recorded tool evidence**, not the model's
 - If tests are unavailable or insufficient, report `unverified` or `partially_verified` explicitly. Do not fabricate success.
 - Completion means the configured policy was met; it is **not proof of semantic correctness**.
 
-**Proposed distinction:** `COMPLETED` is a run state, while verification quality is separately recorded as `verified`, `partially_verified`, or `unverified`. Under a strict policy, only `verified` may lead to `COMPLETED`. Under a permissive policy, a run can finish with a qualified outcome; the benchmark must not count that as a passing task unless its external test oracle passes.
+**Canonical distinction:** A model's `complete` action is a **completion proposal**, not a success verdict. `COMPLETED` is a **runtime terminal state** granted under the configured verification policy; record verification quality separately as `verified`, `partially_verified`, or `unverified`. Under a strict coding policy, only verified evidence permits `COMPLETED`; permissive informational runs may end with a qualified, non-benchmark outcome. **Benchmark resolution is separate** and is determined only by the independent task oracle, never by the model's claim or the runtime status.
 
 ### No-progress handling
 
@@ -431,6 +432,8 @@ For a valid harness comparison, hold constant:
 Vary only the intended strategy: context editing, retrieval enhancement, or both. Context strategies may yield different numbers of calls or tokens—that difference is part of the result and must be reported.
 
 ## 15. Implementation milestones
+
+The phase ordering in [Development Roadmap](development-roadmap.md) is authoritative. The milestones below describe runtime-specific work that is distributed across its Phases 2–4; they are not a competing project schedule.
 
 1. Define `AgentRun`, `RunStatus`, normalized actions, and fake LLM interface.
 2. Build a bounded loop with explicit termination and event recording.
