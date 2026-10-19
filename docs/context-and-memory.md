@@ -170,6 +170,8 @@ The runtime retains an immutable event trail of model requests, tool calls, tool
 
 ## 6. CLM-inspired self-editing context
 
+**MVP tool contract:** The model-facing `update_context` tool is normalized by the LLM adapter into a `context_edit` runtime action. It is the only working-note write tool initially. A bounded `read_memory` tool may retrieve selected findings as needed; a separate `save_memory` tool is deferred. The harness persists accepted edits itself.
+
 Our design borrows the **principle of model-directed context maintenance**: the model decides when its editable notes have become noisy, outdated, or insufficient, and proposes changes.
 
 This is **not** a claim that we are reproducing a particular research implementation exactly. The MVP focuses on a practical, auditable, task-scoped working-memory mechanism.
@@ -407,6 +409,8 @@ Add tests for long histories, missing/corrupt notes, context overflow, stale fil
 - Include ablations at multiple **configured context capacities**, e.g., 8K and 16K, rather than assuming shorter prompts reduce peak RAM.
 
 ## 14. Implementation milestones
+
+The phase ordering in [Development Roadmap](development-roadmap.md) is authoritative: the bounded-history baseline and instrumentation come first (Phases 2–4), followed by editable context (Phase 5). The steps below are subsystem-specific, not a separate overall schedule.
 
 1. Implement a simple bounded-history baseline context builder.
 2. Add model-compatible token counting, reserves, and overflow handling.
