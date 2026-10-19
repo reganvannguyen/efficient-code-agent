@@ -175,6 +175,8 @@ Never run untrusted benchmark tests with broad host permissions. On macOS, prefe
 
 ## 8. Verification and success criteria
 
+**Three distinct outcomes:** (1) the model proposes completion, (2) the runtime accepts or rejects that proposal under its verification policy, and (3) an independent benchmark oracle determines task resolution. Only the third establishes benchmark success. A runtime `COMPLETED` status does not imply a resolved benchmark task.
+
 ### Primary metric: task resolution rate
 
 ```text
@@ -351,6 +353,8 @@ benchmarks/
 Store patches, environment metadata, and evaluation logs under run-specific artifact directories. Do not commit large models, full container images, or secrets.
 
 ## 14. Implementation milestones
+
+The [Development Roadmap](development-roadmap.md) is authoritative for sequencing: the baseline measurement runner starts in Phase 4, and the full internal ablations plus external harness comparison are Phase 7. The steps below describe benchmarking-specific work across those phases.
 
 1. **Build measurement primitives:** Runtime event logging, token counts, timing, patch capture, and explicit outcome labels.
 2. **Build local task runner:** Prepare a pinned repository snapshot and execute a targeted oracle in a separate workspace.
