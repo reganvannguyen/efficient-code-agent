@@ -20,6 +20,8 @@ Each feature should follow a short cycle: **define behavior → implement the sm
 
 ## 2. Roadmap overview
 
+**This document is the authoritative project-wide implementation order.** Milestone lists in the architecture and subsystem documents provide technical breakdowns, not alternative schedules.
+
 ```mermaid
 flowchart TD
     A[Phase 1: Local model foundation] --> B[Phase 2: Read-only autonomous agent]
@@ -87,7 +89,7 @@ Build the smallest useful multi-step agent: it can inspect a repository and answ
 ### Implementation tasks
 
 - [ ] Define a minimal `AgentRun` state and terminal statuses.
-- [ ] Define a normalized model action format: `tool`, `complete`, and `invalid`.
+- [ ] Define a normalized model action format: `tool`, `complete`, and `invalid` initially; add `context_edit` in Phase 5 when the model-facing `update_context` tool is introduced.
 - [ ] Add `list_files` and bounded `read_file` tools.
 - [ ] Implement tool schema validation and workspace-root restrictions.
 - [ ] Implement the loop: assemble prompt → call model → parse action → execute tool → return result.
@@ -125,7 +127,7 @@ Extend the read-only agent into a coding agent that can find code, make changes,
 - [ ] Add `run_tests` using explicitly permitted commands and subprocess timeouts.
 - [ ] Define an approval policy for risky or destructive operations.
 - [ ] Return structured tool results, including failed tests and patch conflicts.
-- [ ] Implement verification using recorded test evidence **after the last relevant edit**.
+- [ ] Implement runtime verification using recorded test evidence **after the last relevant edit**; distinguish model completion proposals from runtime verification and independent benchmark resolution.
 - [ ] Report final diff, executed checks, unresolved issues, and terminal status.
 - [ ] Add no-progress detection for repeated identical actions.
 - [ ] Test clean-workspace preparation and isolation for fixture tasks.
@@ -192,7 +194,8 @@ Test whether model-initiated editing of compact working notes improves coding su
 - [ ] Extract the existing bounded-history prompt builder behind a small context-strategy interface.
 - [ ] Implement run-scoped Markdown storage for `working.md`, `task.md`, and optional `findings/`.
 - [ ] Keep original task and harness instructions immutable.
-- [ ] Add `update_context` with validated `replace` and `append` operations.
+- [ ] Add the model-facing `update_context` tool, normalized by the LLM adapter to the runtime's `context_edit` action, with validated `replace` and `append` operations.
+- [ ] Add bounded `read_memory` for selective findings retrieval when needed; defer a separate `save_memory` tool.
 - [ ] Use atomic writes and record accepted/rejected context edits.
 - [ ] Add model-compatible token counting and deterministic overflow handling.
 - [ ] Selectively assemble working notes, recent results, and relevant findings.
@@ -228,7 +231,7 @@ Give the agent better code discovery without requiring it to read large parts of
 - [ ] Add Tree-sitter parsing for Python source files first.
 - [ ] Extract functions, classes, methods, imports, and source ranges.
 - [ ] Build a compact repository map of symbol names and locations.
-- [ ] Add deterministic candidate ranking and bounded snippet formatting.
+- [ ] Add deterministic candidate ranking and bounded snippet formatting behind the existing `search_code` / `read_file` interfaces; defer extra model-facing symbol tools.
 - [ ] Invalidate affected index entries after edits or external file changes.
 - [ ] Handle unsupported languages and parser failures by falling back to lexical search.
 - [ ] Integrate snippet selection with the global context budget.
