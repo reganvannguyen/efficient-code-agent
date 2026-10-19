@@ -91,7 +91,7 @@ harness run "Fix the failing authentication test" --repo ./sample-repo
 - Distinguish model-declared completion from verified completion.
 - Persist an append-only record of events for diagnosis and evaluation.
 
-The runtime is **model-agnostic** and depends on an LLM client interface rather than llama.cpp-specific code.
+The runtime is **model-agnostic** and depends on an LLM client interface rather than llama.cpp-specific code. Distinguish a model's completion proposal, runtime verification status, and independent benchmark resolution: only the benchmark oracle determines task resolution.
 
 ### 4.3 LLM client and llama.cpp
 
@@ -146,8 +146,10 @@ Initial tool categories:
 | `read_file` | Inspect a bounded file region | Path validation, line limits |
 | `edit_file` | Apply a proposed patch | Workspace scope, diff review/log |
 | `run_tests` | Verify changes | Timeout, bounded output |
-| `update_context` | Modify editable working notes | Context-only paths, size validation |
-| `read_memory` / `save_memory` | Retrieve/store task findings | Scoped paths, size validation |
+| `update_context` | Modify editable working notes (normalized by the adapter as `context_edit`) | Context-only paths, size validation |
+| `read_memory` | Retrieve selected task findings when needed | Scoped paths, size and token limits |
+
+A separate `save_memory` tool is **deferred** for the MVP. The harness persists accepted `update_context` edits; detailed findings storage can be added when there is a concrete use case. The baseline and optimized modes should share the same core repository tools (`list_files`, `search_code`, `read_file`, `edit_file`, `run_tests`); Tree-sitter-enhanced search can operate behind those interfaces.
 
 Do not give the model unrestricted access to the host shell. The MVP should favor explicit tools and allowlisted test commands. File modifications should be recorded and validated; higher-risk operations should require user approval.
 
@@ -337,10 +339,10 @@ Directories and module names are provisional. Avoid creating empty modules befor
 
 1. **Baseline foundation:** Python package, CLI, llama.cpp client, minimal agent loop, bounded read/search/test tools.
 2. **Safe coding workflow:** Patch application, workspace safeguards, completion verification, integration tests.
-3. **Baseline measurement:** Reproducible tasks, event logs, token/time/RAM capture.
+3. **Baseline measurement:** Reproducible tasks, event logs, token/time/RAM capture, and supporting SQLite tracing (before context/retrieval optimizations).
 4. **Editable context:** Task-scoped Markdown memory, model-initiated edits, immutable prompt boundaries, budget fallback.
 5. **Code-aware retrieval:** ripgrep integration, Tree-sitter parsing, repository map, snippet ranking.
-6. **Structured evaluation:** SQLite traces, baseline/optimized ablations, documented results.
+6. **Comparative evaluation:** Run baseline/optimized ablations and external harness comparisons using the Phase 3 measurement infrastructure, then publish documented results.
 
 ## 11. Open design decisions
 
@@ -356,4 +358,4 @@ These should be resolved in their dedicated design documents before implementati
 
 ---
 
-**Related documents (planned):** [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md) · [Development Roadmap](development-roadmap.md).
+**Related documents:** [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md) · [Development Roadmap](development-roadmap.md).
