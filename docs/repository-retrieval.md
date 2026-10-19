@@ -80,6 +80,8 @@ These are sufficient for a minimal coding agent. They remain available in all ex
 
 ### 4.2 Enhanced code-aware retrieval
 
+**MVP decision:** Preserve the baseline model-facing repository tool interface (`list_files`, `search_code`, `read_file`) and enhance search ranking, snippets, and symbol-aware discovery behind those tools. The additional tool names below are **possible later extensions**, not required MVP tools. This minimizes tool-schema differences in the internal ablations.
+
 The optimized variant adds or enriches:
 
 - `search_symbols(name, kind?, path_filter?)`
@@ -385,6 +387,8 @@ Compare **baseline lexical tools** against **enhanced code-aware retrieval** whi
 Evaluate retrieval both **with and without** editable context memory. The full experiment matrix is baseline, retrieval-only, memory-only, and combined. Pin the model, quantization, configured context capacity, tools/permissions, tasks, and execution budgets.
 
 ## 17. Implementation milestones
+
+The [Development Roadmap](development-roadmap.md) controls overall ordering. Basic ripgrep search is implemented with the coding agent in Phase 3; Tree-sitter indexing, ranking, and repository maps arrive in Phase 6. The following are retrieval-specific steps, not a separate schedule.
 
 1. Implement safe `list_files`, `search_code`, and `read_file` baseline tools.
 2. Add ripgrep result normalization, output limits, and integration tests.
