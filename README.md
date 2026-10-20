@@ -147,6 +147,7 @@ See [Development Roadmap](docs/development-roadmap.md) for implementation tasks,
 - [Repository Retrieval](docs/repository-retrieval.md) — lexical search, Tree-sitter, and bounded code snippets.
 - [Benchmarking](docs/benchmarking.md) — task selection, fair comparisons, and evaluation metrics.
 - [Development Roadmap](docs/development-roadmap.md) — phased implementation plan and acceptance criteria.
+- [Local Model Setup](docs/local-model.md) — tested llama.cpp model, launch configuration, and HTTP smoke test.
 
 ## Example CLI (proposed)
 
