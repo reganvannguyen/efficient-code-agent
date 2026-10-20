@@ -2,7 +2,7 @@
 
 **A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
 
-> **Status:** Early development / architecture planning. The capabilities and commands below describe the intended design, not yet implemented functionality.
+> **Status:** Early development. Agent capabilities remain planned; the Python package setup and minimal CLI scaffold are in place.
 
 ## Why this project?
 
@@ -82,6 +82,33 @@ The **Python harness calls the local model** through llama.cpp's HTTP interface.
 | pytest | Automated tests and evaluation helpers |
 
 **Interface:** CLI first, potentially CLI only. FastAPI and React are optional future additions, not part of the initial scope.
+
+## Local development
+
+From the repository root, create and activate a local virtual environment:
+
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+Install the project with its development tools:
+
+```sh
+python -m pip install --upgrade pip
+python -m pip install -e '.[dev]'
+```
+
+Run the module and checks:
+
+```sh
+python -m harness
+python -m pytest
+ruff check src tests
+ruff format --check src tests
+```
+
+Run `deactivate` to leave the environment. The `.venv/` directory is ignored by Git.
 
 ## Evaluation strategy
 
