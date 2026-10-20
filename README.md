@@ -27,13 +27,13 @@ The harness will validate context edits, preserve immutable instructions and tas
 
 ### 2. Code-aware repository retrieval
 
-Use **ripgrep** for fast lexical search and **Tree-sitter** for syntax-aware parsing. Planned retrieval features include symbol lookup, lightweight repository maps, and targeted code snippets.
+Use **ripgrep** for fast lexical search and **Tree-sitter** for syntax-aware parsing. Planned retrieval features include symbol lookup, lightweight repository maps, and targeted code snippets. The baseline will use bounded ripgrep search first; Tree-sitter enhancements come later, behind the same core repository tool interface.
 
 The aim is to supply the model with **the right code**, not the entire repository. Embedding-based retrieval is intentionally deferred until benchmarks justify the additional memory and complexity.
 
 ### 3. Persistent task memory
 
-Store inspectable, agent-editable notes in **Markdown**, initially including a working context and task findings. The harness—not the model directly—handles file reads, writes, validation, and persistence.
+Store inspectable, agent-editable notes in **Markdown**, initially including a working context and task findings. The model proposes working-note changes through `update_context`; the harness validates and persists them. Selected findings can be retrieved with bounded `read_memory` when needed. A separate `save_memory` tool is deferred.
 
 Full execution history stays separate from the condensed working context, so important evidence can be recovered without including every prior tool result in each prompt.
 
@@ -41,7 +41,7 @@ Full execution history stays separate from the condensed working context, so imp
 
 A Python runtime will coordinate repeated **inspect → plan → edit → test → evaluate** cycles. The agent may request repository searches, file reads and edits, or test commands. The harness executes approved tools and returns their results to the model.
 
-Planned protections include workspace boundaries, command validation, step/time budgets, and explicit completion criteria.
+Planned protections include workspace boundaries, command validation, step/time budgets, bounded prompts, and explicit completion criteria. A model's completion proposal is distinct from runtime verification, and independent benchmark tests determine whether a coding task was actually resolved.
 
 ### 5. Hardware-aware context budgeting
 
@@ -94,22 +94,32 @@ The project will compare the **same local model on the same coding tasks** using
 
 Primary metric: **coding-task success rate**, evaluated with tests or task-specific checks.
 
-Secondary metrics: token usage, agent steps, elapsed time, and peak memory. Controlled comparisons and ablation tests will help identify which techniques provide measurable benefits.
+Secondary metrics: token usage, agent steps, elapsed time, and peak memory. Controlled comparisons and ablation tests will help identify which techniques provide measurable benefits. We also plan an external comparison with **mini-SWE-agent** on selected tasks, documenting differences in tools and policies. Locally evaluated tasks will not be presented as official SWE-bench scores.
 
 **No accuracy or efficiency improvements are claimed until benchmarks have been run.**
 
 ## Development roadmap
 
-- [ ] Establish Python package and CLI entry point.
-- [ ] Connect to a local llama.cpp server.
-- [ ] Build a minimal tool-using coding-agent loop.
-- [ ] Add workspace safeguards and test execution.
-- [ ] Create a reproducible baseline task suite.
-- [ ] Implement Markdown working context and context-edit tools.
-- [ ] Implement ripgrep search and Tree-sitter repository mapping.
-- [ ] Add token-budget safeguards.
-- [ ] Add SQLite tracing and resource metrics.
-- [ ] Run comparative benchmarks and document findings.
+Development follows seven incremental phases. Each phase should deliver working behavior, tests, and an explicit acceptance criterion:
+
+1. **Local model foundation:** Connect Python to a quantized coding model through llama.cpp.
+2. **Read-only agent:** Implement a bounded autonomous loop with safe file inspection and prompt budgeting.
+3. **Coding and verification:** Add ripgrep search, file editing, and permitted test execution.
+4. **Baseline evaluation:** Record repeatable task outcomes, SQLite traces, token usage, timing, and memory measurements.
+5. **CLM-inspired context:** Add model-initiated working-note edits and context strategies.
+6. **Code-aware retrieval:** Add Tree-sitter symbol indexing, ranking, and compact repository maps.
+7. **Comparative benchmarking:** Evaluate baseline, retrieval-only, context-only, and combined variants, plus an external harness comparison.
+
+See [Development Roadmap](docs/development-roadmap.md) for implementation tasks, tests, and completion criteria. The roadmap is the authoritative source for implementation order.
+
+## Design documentation
+
+- [Architecture](docs/architecture.md) — system components, boundaries, and technology choices.
+- [Agent Runtime](docs/agent-runtime.md) — agent loop, actions, safeguards, and verification.
+- [Context and Memory](docs/context-and-memory.md) — editable working notes, prompt budgets, and memory strategies.
+- [Repository Retrieval](docs/repository-retrieval.md) — lexical search, Tree-sitter, and bounded code snippets.
+- [Benchmarking](docs/benchmarking.md) — task selection, fair comparisons, and evaluation metrics.
+- [Development Roadmap](docs/development-roadmap.md) — phased implementation plan and acceptance criteria.
 
 ## Example CLI (proposed)
 
