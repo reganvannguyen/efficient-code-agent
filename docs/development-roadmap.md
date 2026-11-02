@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Planned — implementation has not started.  
+> **Status:** Phase 1 local model foundation implemented; Phase 2 planned.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -51,24 +51,24 @@ These are milestone gates, **not estimates of calendar duration**.
 
 ### Objective
 
-Prove that a quantized coding model can run locally and be called reliably from Python. Do not build an agent loop yet.
+Prove that a quantized coding model can run locally and receive a Python chat request. Do not build an agent loop yet.
 
 ### Implementation tasks
 
-- [ ] Initialize a Python package using `pyproject.toml` and a `src/harness/` layout.
-- [ ] Set up a virtual environment, formatter/linter, and `pytest`.
-- [ ] Install or obtain a working `llama.cpp` / `llama-server` build for Apple Silicon.
-- [ ] Choose an initial small GGUF coding model and quantization based on actual memory behavior.
-- [ ] Run the model server with a deliberately bounded context window (8K is a candidate, not a hard requirement).
-- [ ] Write a minimal Python HTTP client that sends a chat request and prints the response.
-- [ ] Capture model errors, timeouts, response text, and token usage when available.
-- [ ] Document the tested model, server arguments, and observed memory behavior.
+- [x] Initialize a Python package using `pyproject.toml` and a `src/harness/` layout.
+- [x] Set up a virtual environment, formatter/linter, and `pytest`.
+- [x] Install or obtain a working `llama.cpp` / `llama-server` build for Apple Silicon.
+- [x] Choose an initial small GGUF coding model and quantization based on actual memory behavior.
+- [x] Run the model server with a deliberately bounded context window (8K is a candidate, not a hard requirement).
+- [x] Write a minimal Python HTTP client that sends a chat request and prints the response.
+- [x] Capture model errors, timeouts, response text, and token usage when available.
+- [x] Document the tested model, server arguments, and observed memory behavior.
 
 ### Tests
 
-- [ ] Mocked HTTP response is parsed correctly.
-- [ ] Connection refusal and timeout produce clear errors.
-- [ ] A real local smoke test receives a valid response.
+- [x] Mocked HTTP response is parsed correctly.
+- [x] Connection refusal and timeout produce clear errors.
+- [x] A real local smoke test receives a valid response.
 
 ### Deliverable
 

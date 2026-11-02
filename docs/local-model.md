@@ -47,4 +47,39 @@ curl http://127.0.0.1:9931/v1/chat/completions \
 
 The server returned `Hello!` with `finish_reason: stop`. The response reported 3 completion tokens, 78.50 prompt tokens/second, and 20.89 generated tokens/second. A separate UI response showed 22.63 tokens/second; these are short single-request observations, not benchmark results.
 
-After the request, `ps` reported the server at 3,667,024 KiB RSS (about 3.5 GiB) at roughly 13 minutes of uptime. This is a point-in-time process RSS value, not peak or total system memory usage. No startup failure was observed.
+The Python CLI can send a single non-streaming request:
+
+```sh
+python -m harness chat "Say hello in one sentence."
+```
+
+The one-shot command defaults to `http://127.0.0.1:9931`, model
+`Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf`, a 120-second timeout, and 256 maximum
+tokens. Override them with `--base-url`, `--model`, `--timeout`, and
+`--max-tokens`. The response is written to stdout; token counts, when reported,
+are written to stderr. HTTP, connection, timeout, and malformed-response errors
+are shown as concise CLI errors.
+
+## Interactive CLI
+
+Install the package with `python -m pip install -e '.[dev]'`, start
+`llama-server` separately as shown above, then run `harness` (or
+`python -m harness`). The CLI prompts with `You > `; each nonblank line is
+sent as a separate request with no conversation history. Enter `/exit` to quit.
+End of input and Ctrl+C also exit cleanly. Client errors are printed to stderr
+and the prompt remains available for another request.
+
+### Python CLI smoke test — 2026-11-02
+
+With `llama-server` running using the configuration above, this single local
+request succeeded:
+
+```sh
+.venv/bin/python -m harness chat 'Say hello in one sentence.' --max-tokens 64
+```
+
+It printed `Hello!` and reported 35 prompt tokens, 3 completion tokens, and 38
+total tokens. This records one successful smoke test, not repeated reliability
+or benchmark evidence.
+
+After the earlier curl request, `ps` reported the server at 3,667,024 KiB RSS (about 3.5 GiB) at roughly 13 minutes of uptime. This is a point-in-time process RSS value, not peak or total system memory usage. No startup failure was observed.
