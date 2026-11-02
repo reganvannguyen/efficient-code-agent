@@ -2,7 +2,7 @@
 
 **A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
 
-> **Status:** Early development. Agent capabilities remain planned; the Python package setup and minimal CLI scaffold are in place.
+> **Status:** Early development. The local model chat command and stateless interactive prompt loop are implemented; autonomous agent capabilities remain planned.
 
 ## Why this project?
 
@@ -99,14 +99,16 @@ python -m pip install --upgrade pip
 python -m pip install -e '.[dev]'
 ```
 
-Run the module and checks:
+Run the checks:
 
 ```sh
-python -m harness
 python -m pytest
 ruff check src tests
 ruff format --check src tests
 ```
+
+After installing, run `harness` to open interactive mode. Start `llama-server`
+separately before sending a prompt.
 
 Run `deactivate` to leave the environment. The `.venv/` directory is ignored by Git.
 
@@ -139,8 +141,12 @@ Development follows seven incremental phases. Each phase should deliver working 
 
 See [Development Roadmap](docs/development-roadmap.md) for implementation tasks, tests, and completion criteria. The roadmap is the authoritative source for implementation order.
 
+For a beginner-friendly guide to the implemented modules, request flow, APIs,
+and tests, see the [Implemented Code Map](docs/code-map.md).
+
 ## Design documentation
 
+- [Implemented Code Map](docs/code-map.md) — current Python modules, chat flow, and tests.
 - [Architecture](docs/architecture.md) — system components, boundaries, and technology choices.
 - [Agent Runtime](docs/agent-runtime.md) — agent loop, actions, safeguards, and verification.
 - [Context and Memory](docs/context-and-memory.md) — editable working notes, prompt budgets, and memory strategies.
@@ -149,12 +155,30 @@ See [Development Roadmap](docs/development-roadmap.md) for implementation tasks,
 - [Development Roadmap](docs/development-roadmap.md) — phased implementation plan and acceptance criteria.
 - [Local Model Setup](docs/local-model.md) — tested llama.cpp model, launch configuration, and HTTP smoke test.
 
-## Example CLI (proposed)
+## Local model CLI
+
+Start `llama-server` separately with the desired GGUF model. Then run `harness`
+to enter interactive mode. Each prompt is sent as its own request without
+conversation history; enter `/exit` to quit. Blank lines are ignored. The CLI
+prints each response and any token usage reported by the server.
 
 ```bash
-# Illustrative interface; not implemented yet
-harness run "Find and fix the failing authentication test" --repo ./example-project
+harness
+You > Say hello in one sentence.
 ```
+
+The `python -m harness` command opens the same interactive loop. For one prompt
+without entering interactive mode, use:
+
+```bash
+python -m harness chat "Say hello in one sentence."
+# Optional settings: --base-url http://127.0.0.1:9931 --model MODEL.gguf
+#                    --timeout 120 --max-tokens 256
+```
+
+The `harness chat PROMPT` command prints the response to stdout and token usage
+to stderr when the server reports it. See [Local Model Setup](docs/local-model.md)
+for the tested server configuration and details.
 
 The initial release will focus on a single local machine and repository, not distributed infrastructure or cloud deployment.
 
