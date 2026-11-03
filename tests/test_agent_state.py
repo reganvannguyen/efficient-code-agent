@@ -12,6 +12,7 @@ def test_run_defaults_and_instances_are_independent() -> None:
     assert first.status is RunStatus.PENDING
     assert first.steps == first.model_calls == 0
     assert first.final_response is None
+    assert first.stop_reason is None
     first.steps += 1
     first.model_calls += 1
     assert second.steps == second.model_calls == 0

@@ -29,6 +29,7 @@ class AgentRun:
     steps: int = 0
     model_calls: int = 0
     final_response: str | None = None
+    stop_reason: str | None = None
 
     def transition_to(self, status: RunStatus) -> None:
         """Move to a lifecycle state allowed by the current MVP contract."""
