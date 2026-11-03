@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1 local model foundation implemented; Phase 2 planned.
+> **Status:** Phase 1 local model foundation implemented; Phase 2 state and action protocol contracts implemented, agent loop and tools planned.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -88,8 +88,8 @@ Build the smallest useful multi-step agent: it can inspect a repository and answ
 
 ### Implementation tasks
 
-- [ ] Define a minimal `AgentRun` state and terminal statuses.
-- [ ] Define a normalized model action format: `tool`, `complete`, and `invalid` initially; add `context_edit` in Phase 5 when the model-facing `update_context` tool is introduced.
+- [x] Define a minimal `AgentRun` state and terminal statuses.
+- [x] Define and strictly parse normalized `tool`, `complete`, and `invalid` actions; add `context_edit` in Phase 5 when the model-facing `update_context` tool is introduced.
 - [ ] Add `list_files` and bounded `read_file` tools.
 - [ ] Implement tool schema validation and workspace-root restrictions.
 - [ ] Implement the loop: assemble prompt → call model → parse action → execute tool → return result.
