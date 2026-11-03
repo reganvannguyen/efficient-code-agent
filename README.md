@@ -85,6 +85,10 @@ The **Python harness calls the local model** through llama.cpp's HTTP interface.
 
 ## Local development
 
+Install ripgrep (`rg`) before using the repository `list_files` tool. On macOS,
+install it with `brew install ripgrep`; other platforms can use their package
+manager or the [ripgrep installation guide](https://github.com/BurntSushi/ripgrep#installation).
+
 From the repository root, create and activate a local virtual environment:
 
 ```sh

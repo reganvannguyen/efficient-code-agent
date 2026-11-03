@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** The Phase 2 run-state and normalized action contracts are implemented; the agent loop and remaining runtime components are future work.
+> **Status:** Phase 2 run-state, action parsing, and bounded read-only `list_files` / `read_file` tools are implemented. The agent loop and remaining runtime components are future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -237,6 +237,40 @@ Failures must be equally structured: `ok: false`, stable `error_code`, and a con
 | `run_tests` | Approved test target or preset | Exit code, bounded stdout/stderr | Allowlist, timeout, output cap |
 | `update_context` | Edit operation, target, content | Accepted/rejected, new size | Only editable notes; size cap |
 | `read_memory` | Task-scoped memory key | Selected findings/note content | Scope and token limits |
+
+### Implemented read-only tools
+
+`harness.tools.dispatcher.execute_tool(action: ToolAction, workspace: Path) -> ToolResult`
+currently dispatches only `list_files` and `read_file`. It validates exact field
+sets and value types before resolving the workspace, and returns a frozen
+`ToolResult(tool, ok, data, truncated, error_code, message)`. Call
+`to_dict()` for its JSON-ready representation; the serialized result is capped
+at 32 KiB. Unsupported names and malformed requests return controlled errors.
+
+- `list_files` accepts optional `directory="."` and a positive `pattern` glob.
+  It invokes `rg --files --null` with a fixed argument list, honors repository
+  ignore rules (including non-Git `.ignore` / `.gitignore` fixtures), and
+  disables user ripgrep config and global Git excludes. The pattern is applied
+  to discovered workspace-relative paths with Python `Path.match`; it cannot
+  reveal ignored paths. Hidden paths and `node_modules`, `.venv`,
+  `__pycache__`, `dist`, and `build` are excluded even when a pattern matches.
+  Results are sorted and limited to 200 paths, 64 KiB of ripgrep output, and
+  five seconds.
+- `read_file` requires a relative `path`, with optional positive integer
+  `start_line` and `end_line` (inclusive). The default range is at most 200
+  lines from `start_line` (default 1). It accepts regular UTF-8 text files up
+  to 1 MiB, rejects NUL bytes, and returns line-numbered content capped at
+  16 KiB. Metadata includes the relative path, byte size, total line count,
+  and actual returned line bounds; an empty range has null bounds. `truncated`
+  is true when a nonempty file is only partly returned, including a range past
+  EOF.
+
+Both tools resolve the workspace and target canonically, reject absolute paths,
+`..` components, and symlink escapes, and permit symlinks that resolve inside
+the workspace. Explicit reads can access hidden or ignored files. The boundary
+does not defend against hostile concurrent filesystem mutation between checks
+and reads; it is not an OS sandbox. These tools do not write files or execute
+repository code. `list_files` requires `rg` on `PATH`.
 
 `update_context` is the MVP write interface for working notes; a separate `save_memory` tool is deferred. The model-facing `update_context` request is normalized by the LLM adapter into the runtime's `context_edit` action kind. Keep the core repository tool interface common across retrieval strategies; symbol maps and ranking can initially be implemented behind `search_code` and `read_file`.
 
