@@ -1,8 +1,9 @@
 # Implemented code map
 
 This guide describes the code that exists today. The Python package currently
-supports a one-request chat command and a stateless interactive prompt loop; the
-autonomous agent loop and its planned tools are future work. Interactive prompts
+supports a one-request chat command, a stateless interactive prompt loop, and the
+initial agent run-state and action parsing contracts; the autonomous agent loop
+and its planned tools are future work. Interactive prompts
 are independent requests with no conversation history. This page is maintained
 alongside code changes, not generated or refreshed by an automatic watcher.
 
@@ -31,8 +32,8 @@ flowchart LR
 modules in this repository. In interactive mode Python sends each nonblank
 prompt as its own non-streaming chat request, without carrying conversation
 history between requests. The one-shot `chat PROMPT` command remains available.
-There is no repository inspection, tool dispatch, multi-step agent loop, or
-autonomous editing in this flow.
+The action parser is not connected to this request flow. There is no repository
+inspection, tool dispatch, multi-step agent loop, or autonomous editing.
 
 ## Package files
 
@@ -42,6 +43,37 @@ autonomous editing in this flow.
 | [`src/harness/__main__.py`](../src/harness/__main__.py) | Calls `harness.cli.main()` so `python -m harness` works. |
 | [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses and validates one-shot `chat` options; shares response and usage formatting; handles interactive termination and retryable request errors. |
 | [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, sends it with `urllib`, validates/parses the response, and normalizes available usage counts. |
+| [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state and normalized action protocol types and parser. |
+| [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses, mutable `AgentRun` state and counters, and permitted state transitions. |
+| [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope. |
+
+## Agent runtime contracts
+
+`RunStatus` is a `str` enum with values `pending`, `running`,
+`waiting_approval`, `completed`, `failed`, `limit_reached`, and `cancelled`.
+`AgentRun(task: str, workspace: Path, status: RunStatus = PENDING, steps: int =
+0, model_calls: int = 0, final_response: str | None = None)` is mutable.
+`transition_to(status: RunStatus) -> None` permits `PENDING → RUNNING` and
+`RUNNING → COMPLETED`, `FAILED`, `LIMIT_REACHED`, or `CANCELLED`. Other
+transitions, including all transitions involving `WAITING_APPROVAL`, raise
+`ValueError`; terminal states are immutable. The future loop owns counter
+updates: `model_calls` counts inference attempts, while `steps` counts
+processed actions, including invalid actions. The present package defines the
+fields but does not increment them.
+
+`ToolAction(name: str, arguments: dict[str, object])`,
+`CompleteAction(summary: str)`, and `InvalidAction(reason: str)` are frozen
+dataclasses with fixed `kind` values `tool`, `complete`, and `invalid`.
+`Action` is their union. `parse_action(text: str) -> Action` accepts exact
+`tool` and `complete` object envelopes, rejects malformed or ambiguous JSON as
+`InvalidAction`, and leaves tool-name and argument semantics to future dispatch
+code. Parsing a completion proposal does not change an `AgentRun`.
+
+The parser's private `_unique_object(pairs: list[tuple[str, object]]) ->
+dict[str, object]` hook rejects duplicate keys at every object depth, and
+`_reject_constant(value: str) -> None` rejects non-standard JSON numeric
+constants. These contracts are implemented but are not yet called by the CLI
+or an agent loop.
 
 The `harness` console script registered in `pyproject.toml` points to
 `harness.cli:main`, the same entry point used by `python -m harness`.

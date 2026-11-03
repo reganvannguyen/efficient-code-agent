@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** Proposed technical specification — not yet implemented.  
+> **Status:** The Phase 2 run-state and normalized action contracts are implemented; the agent loop and remaining runtime components are future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -89,10 +89,10 @@ Terminal states are immutable for the MVP. Resuming a terminated or interrupted 
 
 ### Runtime-owned state
 
-A proposed minimal state model:
+The implemented Phase 2 state contract is:
 
 ```python
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
@@ -107,25 +107,25 @@ class RunStatus(str, Enum):
 
 @dataclass
 class AgentRun:
-    run_id: str
-    task: str                      # Immutable original request
-    workspace: Path                # Canonical workspace root
-    model_id: str
-    strategy: str
+    task: str
+    workspace: Path
     status: RunStatus = RunStatus.PENDING
     steps: int = 0
     model_calls: int = 0
-    total_input_tokens: int = 0
-    total_output_tokens: int = 0
-    last_result: dict | None = None
-    verification: dict = field(default_factory=dict)
+    final_response: str | None = None
+
+    def transition_to(self, status: RunStatus) -> None: ...
 ```
 
-This is an **interface sketch**, not a finalized database schema. Time budgets, cancellation flags, policy, and detailed event history may live in associated runtime objects.
+`task` and `workspace` are required at construction. `steps` and `model_calls` are ordinary mutable runtime-owned counters. `transition_to` permits `pending → running` and `running → completed`, `failed`, `limit_reached`, or `cancelled`; every other transition raises `ValueError`. `waiting_approval` is represented as a status for the later approval workflow, but this Phase 2 contract has no transition into or out of it. Terminal statuses cannot be reopened. Run identifiers, model configuration, token usage, evidence, and persistence belong to later runtime work.
+
+### Normalized action protocol
+
+The implemented `parse_action(text: str) -> Action` accepts exactly one JSON object, with surrounding whitespace allowed. The supported envelopes are `{"kind":"tool","name":"...","arguments":{...}}` and `{"kind":"complete","summary":"..."}`. Each object must have exactly its listed keys; tool names and completion summaries must be non-blank strings, and arguments must be an object. Unknown tool names are accepted because dispatch and tool validation are future work. Duplicate keys at any nesting depth, non-standard numeric constants, extra text, multiple values, malformed JSON, unknown action kinds, and wrong field types produce `InvalidAction` instead of raising. A completion action is only a model proposal and parsing it does not change run state. The `invalid` discriminator exists on `InvalidAction` as the parser's normalized error result; model-supplied `kind: "invalid"` is unsupported input.
 
 ## 4. Agent loop contract
 
-The loop should be small and readable. Tool implementations, prompt construction, and persistence belong behind interfaces.
+The loop below is a future design example; no loop currently consumes `AgentRun` or `parse_action`. Tool implementations, prompt construction, and persistence belong behind interfaces.
 
 ```python
 def run_agent(run, context_manager, llm, tools, verifier, recorder, limits):
