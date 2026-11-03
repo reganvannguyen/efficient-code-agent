@@ -3,7 +3,8 @@
 This guide describes the code that exists today. The Python package currently
 supports a one-request chat command, a stateless interactive prompt loop, agent
 run-state and action parsing, bounded read-only repository tools, and a bounded
-read-only agent loop. CLI integration remains future work. Interactive prompts
+read-only agent loop with independent budgets, cooperative cancellation, and
+transport retry. CLI integration remains future work. Interactive prompts
 are independent requests with no conversation history. This page is maintained
 alongside code changes, not generated or refreshed by an automatic watcher.
 
@@ -19,7 +20,7 @@ flowchart LR
     C -->|no arguments| I[harness.cli.interactive]
     I -->|each nonblank prompt| H[harness.llama_client.chat]
     C -->|chat PROMPT| H
-    H -->|HTTP POST JSON| S[External llama-server]
+    H -->|HTTP POST JSON, bounded read| S[External llama-server]
     G[External GGUF model] --> S
     S -->|JSON response| H
     H --> R[ChatResponse]
@@ -43,14 +44,16 @@ flowchart LR
     T[Task + workspace] --> R[harness.agent.runtime.run_agent]
     R --> P[Bounded prompt + retained history]
     P --> M[Injected model callable]
+    M -->|one transport retry| M
     M --> A[parse_action]
     A -->|tool| X[execute_tool]
     X --> O[JSON action + observation exchange]
     O --> P
     A -->|invalid| O
     A -->|complete| S[COMPLETED, model_complete]
-    R -->|call or prompt budget| L[LIMIT_REACHED]
-    R -->|LlamaClientError| F[FAILED, model_error]
+    R -->|call / step / prompt / output / time / invalid limit| L[LIMIT_REACHED]
+    R -->|transport / timeout exhausted| F[FAILED]
+    R -->|cancellation / KeyboardInterrupt| C[CANCELLED]
 ```
 
 ## Read-only tool flow
@@ -75,11 +78,11 @@ flowchart LR
 | [`src/harness/__init__.py`](../src/harness/__init__.py) | Package docstring; no runtime behavior. |
 | [`src/harness/__main__.py`](../src/harness/__main__.py) | Calls `harness.cli.main()` so `python -m harness` works. |
 | [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses and validates one-shot `chat` options; shares response and usage formatting; handles interactive termination and retryable request errors. |
-| [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, sends it with `urllib`, validates/parses the response, and normalizes available usage counts. |
+| [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, sends it with `urllib`, reads at most 1 MiB plus a sentinel, classifies transport/timeouts and oversized bodies, validates/parses JSON, and normalizes available usage counts. |
 | [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, and `run_agent`. |
 | [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses, mutable `AgentRun` state, counters, stop reason, and permitted state transitions. |
-| [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope. |
-| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Validates invocations, builds UTF-8-byte-bounded prompts, runs the bounded read-only model/action/tool loop, tracks counters and terminal reasons, and observes tool and invalid-response results. |
+| [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
+| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Validates model timeout compatibility and runtime limits, checks cooperative cancellation and monotonic deadlines at safe boundaries, retries one typed transport failure within the call budget, enforces independent call/step/invalid/prompt/output budgets, and runs the read-only action/tool loop. |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
 | [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates the supported tool schemas before filesystem access, resolves the workspace, and dispatches `list_files` / `read_file`. |
 | [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks. |
@@ -96,19 +99,27 @@ None = None)` is mutable.
 transitions, including all transitions involving `WAITING_APPROVAL`, raise
 `ValueError`; terminal states are immutable. `model_calls` counts attempted
 inference calls, while `steps` counts processed responses, including invalid
-actions. `stop_reason` records `model_complete`, `model_call_limit`,
-`prompt_budget`, or `model_error`.
+actions. Stop reasons include `model_complete`, `model_call_limit`,
+`step_limit`, `invalid_action_limit`, `prompt_budget`, `model_output_limit`,
+`run_timeout`, `model_timeout`, `model_error`, and `cancelled`.
 
-`run_agent(task: str, workspace: Path, *, model: Callable[[str], ChatResponse] =
-chat, max_model_calls: int = 20, max_prompt_bytes: int = 24576) -> AgentRun`
-requires a nonblank task, an existing canonical workspace directory, a callable
-model, and positive integer limits (booleans are rejected). It starts one run
-and accepts a completion on the final allowed model call. The call limit is
-checked before inference; calls are counted before invoking the model, and each
-parsed response increments `steps`. A `LlamaClientError` fails without retry or
-step. Tool actions are dispatched through `execute_tool`; tool errors are
-recorded as observations and the loop continues. Invalid model responses
-receive generic format feedback and at most a 1 KiB UTF-8-safe excerpt.
+`run_agent(task: str, workspace: Path, *, model: Callable[..., ChatResponse] =
+chat, max_model_calls: int = 20, max_steps: int = 20,
+max_consecutive_invalid_actions: int = 3, request_timeout: float = 120,
+run_timeout: float = 300, max_prompt_bytes: int = 24576,
+max_model_response_bytes: int = 65536,
+cancelled: Callable[[], bool] | None = None) -> AgentRun` requires a nonblank
+task, an existing canonical workspace directory, a model accepting
+`model(prompt, *, timeout=seconds)`, positive integer budgets and finite
+positive timeouts (booleans rejected), and an optional cancellation callback.
+Calls count attempts and retries; steps count processed response text, not
+transport failures or oversized HTTP bodies. Cancellation precedes the
+monotonic deadline, which precedes completion. Last-call and last-step
+completions are accepted. One typed transport/timeout failure retries the same
+prompt within the remaining call/time budget. Oversized response text counts
+as a step; an oversized HTTP body stops without a step. Invalid tool/protocol
+actions advance the invalid streak; ordinary tool errors are observations and
+reset it. Only completion sets `final_response`.
 
 Prompt assembly pins the original task and safety/protocol instructions, then
 includes chronological JSON action/observation exchanges. To stay within the
@@ -120,16 +131,22 @@ The limit measures bytes, not model tokens. `complete` stores its summary as
 performed, so this status alone does not establish correctness.
 
 Runtime helpers in [`runtime.py`](../src/harness/agent/runtime.py):
-`_validate_invocation(task: str, workspace: Path, model: Callable[[str],
-ChatResponse], max_model_calls: int, max_prompt_bytes: int) -> Path` validates
-arguments and returns the canonical workspace before a model call;
-`_stop(run: AgentRun, status: RunStatus, reason: str) -> None` records the
-reason and transitions the run; `_exchange(action: object, observation: object)
--> str` serializes one JSON history entry; `_build_prompt(task: str, history:
-list[str], byte_limit: int) -> str | None` assembles the pinned prompt and trims
-oldest complete entries in place until it fits, or returns `None` when the
-pinned prompt and newest entry cannot fit; `_utf8_excerpt(value: str, byte_limit:
-int) -> str` returns a UTF-8-safe excerpt bounded by bytes.
+`_validate_invocation(task, workspace, model, max_model_calls, max_steps,
+max_consecutive_invalid_actions, request_timeout, run_timeout,
+max_prompt_bytes, max_model_response_bytes, cancelled) -> Path` validates
+arguments, model timeout compatibility, and returns the canonical workspace
+before inference; `_request_model(run, model, prompt, request_timeout, deadline,
+max_model_calls, cancelled)` enforces the call budget and one transport retry
+while forwarding the smaller request/remaining-run timeout;
+`_boundary_stop(run, cancelled, deadline)` checks cancellation before the
+monotonic deadline; `_stop(run: AgentRun, status: RunStatus, reason: str) ->
+None` records the reason and transitions the run; `_exchange(action: object,
+observation: object) -> str` serializes one JSON history entry;
+`_build_prompt(task: str, history: list[str], byte_limit: int) -> str | None`
+assembles the pinned prompt and trims oldest complete entries in place until it
+fits, or returns `None` when the pinned prompt and newest entry cannot fit;
+`_utf8_excerpt(value: str, byte_limit: int) -> str` returns a UTF-8-safe
+excerpt bounded by bytes.
 
 `ToolAction(name: str, arguments: dict[str, object])`,
 `CompleteAction(summary: str)`, and `InvalidAction(reason: str)` are frozen

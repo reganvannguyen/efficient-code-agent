@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** Phase 2 run-state, action parsing, bounded read-only `list_files` / `read_file` tools, and a bounded read-only agent loop are implemented. CLI integration, cancellation, and runtime verification remain future work.
+> **Status:** Phase 2 run-state, action parsing, bounded read-only `list_files` / `read_file` tools, independent runtime budgets, request/run timeouts, retry, and cooperative cancellation are implemented. CLI integration and runtime verification remain future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -126,20 +126,26 @@ The implemented `parse_action(text: str) -> Action` accepts exactly one JSON obj
 
 ## 4. Agent loop contract
 
-`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable, prompt-byte and model-call limits, and the existing repository dispatcher. It assembles a pinned task/policy prompt, removes oldest complete action/observation exchanges to fit the UTF-8 byte budget, parses one response, dispatches read-only tools, and returns the terminal `AgentRun`. Invalid responses are observed with generic feedback and a UTF-8-safe excerpt capped at 1 KiB. A `LlamaClientError` fails the run without retry. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit.
+`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable and independent budgets for model attempts, processed steps, consecutive invalid actions, request duration, total run duration, prompt bytes, and model response bytes. It assembles a pinned task/policy prompt, removes oldest complete action/observation exchanges to fit the UTF-8 byte budget, parses one response, dispatches read-only tools, and returns the terminal `AgentRun`. Invalid responses are observed with generic feedback and a UTF-8-safe excerpt capped at 1 KiB. A typed transport or timeout error gets one immediate retry using the same prompt; malformed server responses are not retried. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit.
 
 ```python
 run_agent(
     task: str,
     workspace: Path,
     *,
-    model: Callable[[str], ChatResponse] = chat,
+    model: Callable[..., ChatResponse] = chat,
     max_model_calls: int = 20,
+    max_steps: int = 20,
+    max_consecutive_invalid_actions: int = 3,
+    request_timeout: float = 120,
+    run_timeout: float = 300,
     max_prompt_bytes: int = 24576,
+    max_model_response_bytes: int = 65536,
+    cancelled: Callable[[], bool] | None = None,
 ) -> AgentRun
 ```
 
-The current implementation has no persistence, asynchronous approval, cancellation, or resource cleanup. Model failures and parse errors count toward their respective model-call and step counters, and the model-call limit is checked before the next inference attempt.
+Injected models must accept `model(prompt, *, timeout=seconds)` and honor the cooperative request timeout; the runtime cannot forcibly stop a custom callable. Numeric budgets must be positive integers, timeouts finite and positive, and booleans are rejected. Safe-boundary checks run before inference, after model success or failure, and before/after tools and completion. Cancellation takes precedence over the run deadline, which takes precedence over completion. Only a successful completion action sets `final_response`. Model-call counts include retries; steps include invalid actions and oversized response text, but not failures or oversized HTTP bodies. Cancellation is local and cooperative; it is not propagated to a subprocess or forcibly terminate a model request.
 
 ### Loop invariants
 
@@ -298,22 +304,22 @@ Track repeated identical tool calls, repeated unchanged patches, and repeated co
 
 ## 8. Budgets, stopping, and cancellation
 
-The runtime enforces independent limits:
+The runtime currently enforces the following budgets:
 
 | Budget | Purpose |
 | --- | --- |
 | Maximum model calls | Prevent indefinite generation |
 | Maximum total steps | Bound tool/context-edit cycles |
 | Wall-clock timeout | Bound overall task duration |
-| Maximum input/output tokens | Bound cumulative inference cost |
-| Maximum prompt/context tokens | Fit model context window and RAM target |
-| Per-tool timeout/output limit | Prevent hanging tests and enormous tool output |
 | Maximum consecutive invalid actions | Detect model/tool-protocol incompatibility |
-| Maximum no-progress streak | Detect loops |
+| Maximum prompt and model response bytes | Bound UTF-8 request/response text |
 
-**Initial numeric defaults are intentionally undecided.** Benchmarking should pin them before comparisons. A budget exceeded after a model response still stops the next action if execution would violate policy.
+Token-based limits, per-tool execution timeouts, and no-progress limits remain
+future work. Repository tools have their own existing output limits.
 
-Cancellation should be checked between steps and propagated to long-running subprocesses. A forced termination may leave partial edits; the final report must show them. Automatic rollback is not an MVP guarantee.
+The implemented defaults are 20 model attempts, 20 processed steps, 3 consecutive invalid actions, 120 seconds per request, 300 seconds per run, 24,576 prompt bytes, and 65,536 response bytes. Benchmarking should pin these settings before comparisons. A completion on the final allowed call or step is accepted if cancellation and the deadline permit it. Invalid tool/protocol actions advance the invalid streak; other processed responses reset it. A budget exceeded after a model response stops a further action if execution would violate policy.
+
+The optional cancellation callback is checked at safe boundaries; cancellation is not currently propagated to long-running subprocesses. A forced termination may leave partial edits; the final report must show them. Automatic rollback is not an MVP guarantee.
 
 ## 9. Error handling
 

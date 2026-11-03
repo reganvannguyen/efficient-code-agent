@@ -5,10 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from harness.agent import RunStatus, ToolAction, run_agent
+from harness.agent import RunStatus, ToolAction, run_agent, runtime
 from harness.agent.runtime import _build_prompt
-from harness.llama_client import ChatResponse, LlamaClientError
-from harness.tools import execute_tool
+from harness.llama_client import (
+    ChatResponse,
+    LlamaClientError,
+    LlamaResponseTooLargeError,
+    LlamaTimeoutError,
+    LlamaTransportError,
+)
+from harness.tools import ToolResult, execute_tool
 
 
 def test_run_reads_multiple_files_and_completes(tmp_path: Path) -> None:
@@ -29,7 +35,7 @@ def test_run_reads_multiple_files_and_completes(tmp_path: Path) -> None:
     )
     prompts: list[str] = []
 
-    def model(prompt: str) -> ChatResponse:
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
         prompts.append(prompt)
         return ChatResponse(next(outputs))
 
@@ -58,13 +64,13 @@ def test_independent_runs_do_not_share_history_counters_or_answers(
     first_prompts: list[str] = []
     second_prompts: list[str] = []
 
-    def first_model(prompt: str) -> ChatResponse:
+    def first_model(prompt: str, *, timeout: float) -> ChatResponse:
         first_prompts.append(prompt)
         if len(first_prompts) == 1:
             return ChatResponse('{"kind":"tool","name":"list_files","arguments":{}}')
         return ChatResponse('{"kind":"complete","summary":"first answer"}')
 
-    def second_model(prompt: str) -> ChatResponse:
+    def second_model(prompt: str, *, timeout: float) -> ChatResponse:
         second_prompts.append(prompt)
         return ChatResponse('{"kind":"complete","summary":"second answer"}')
 
@@ -104,7 +110,7 @@ def test_invalid_tool_or_response_is_observed_and_can_recover(
     outputs = iter([answer, '{"kind":"complete","summary":"Done"}'])
     prompts: list[str] = []
 
-    def model(prompt: str) -> ChatResponse:
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
         prompts.append(prompt)
         return ChatResponse(next(outputs))
 
@@ -121,7 +127,7 @@ def test_completion_on_last_allowed_call_succeeds(
 ) -> None:
     calls = 0
 
-    def model(_: str) -> ChatResponse:
+    def model(_: str, *, timeout: float) -> ChatResponse:
         nonlocal calls
         calls += 1
         if calls < max_calls:
@@ -143,16 +149,23 @@ def test_completion_on_last_allowed_call_succeeds(
 )
 def test_noncompleting_model_stops_at_call_limit(tmp_path: Path, answer: str) -> None:
     run = run_agent(
-        "Keep going", tmp_path, model=lambda _: ChatResponse(answer), max_model_calls=3
+        "Keep going",
+        tmp_path,
+        model=lambda _, *, timeout: ChatResponse(answer),
+        max_model_calls=3,
     )
 
     assert run.status is RunStatus.LIMIT_REACHED
-    assert run.stop_reason == "model_call_limit"
-    assert run.model_calls == run.steps == 3
+    if answer == "invalid":
+        assert run.stop_reason == "invalid_action_limit"
+        assert run.model_calls == run.steps == 3
+    else:
+        assert run.stop_reason == "model_call_limit"
+        assert run.model_calls == run.steps == 3
 
 
 def test_model_failure_counts_attempt_and_fails_without_step(tmp_path: Path) -> None:
-    def model(_: str) -> ChatResponse:
+    def model(_: str, *, timeout: float) -> ChatResponse:
         raise LlamaClientError("offline")
 
     run = run_agent("Inspect", tmp_path, model=model)
@@ -192,7 +205,7 @@ def test_prompt_budget_keeps_task_and_newest_whole_exchange() -> None:
 def test_oversized_prompt_stops_without_inference(tmp_path: Path) -> None:
     calls = 0
 
-    def model(_: str) -> ChatResponse:
+    def model(_: str, *, timeout: float) -> ChatResponse:
         nonlocal calls
         calls += 1
         return ChatResponse(
@@ -210,7 +223,7 @@ def test_oversized_prompt_stops_without_inference(tmp_path: Path) -> None:
 def test_oversized_task_stops_before_inference(tmp_path: Path) -> None:
     calls = 0
 
-    def model(_: str) -> ChatResponse:
+    def model(_: str, *, timeout: float) -> ChatResponse:
         nonlocal calls
         calls += 1
         return ChatResponse('{"kind":"complete","summary":"Done"}')
@@ -237,7 +250,7 @@ def test_large_read_observation_stops_before_overbudget_next_call(
     assert len(json.dumps(observation).encode("utf-8")) > 500
     prompts: list[str] = []
 
-    def model(prompt: str) -> ChatResponse:
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
         prompts.append(prompt)
         return ChatResponse(
             '{"kind":"tool","name":"read_file","arguments":{"path":"large.txt"}}'
@@ -274,7 +287,7 @@ def test_lone_surrogates_are_observed_without_crashing(
     outputs = iter([answer, '{"kind":"complete","summary":"Recovered"}'])
     prompts: list[str] = []
 
-    def model(prompt: str) -> ChatResponse:
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
         prompts.append(prompt)
         return ChatResponse(next(outputs))
 
@@ -294,7 +307,7 @@ def test_invalid_response_excerpt_is_utf8_safe_and_at_most_1kib(
     outputs = iter(["é" * 2000, '{"kind":"complete","summary":"Recovered"}'])
     prompts: list[str] = []
 
-    def model(prompt: str) -> ChatResponse:
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
         prompts.append(prompt)
         return ChatResponse(next(outputs))
 
@@ -308,6 +321,440 @@ def test_invalid_response_excerpt_is_utf8_safe_and_at_most_1kib(
     assert excerpt == "é" * 512
 
 
+def test_step_limit_is_independent_and_accepts_completion_on_last_step(
+    tmp_path: Path,
+) -> None:
+    outputs = iter(
+        [
+            '{"kind":"tool","name":"list_files","arguments":{}}',
+            '{"kind":"complete","summary":"Done"}',
+        ]
+    )
+    run = run_agent(
+        "Inspect",
+        tmp_path,
+        model=lambda _p, *, timeout: ChatResponse(next(outputs)),
+        max_steps=2,
+    )
+    assert (run.status, run.stop_reason, run.steps, run.model_calls) == (
+        RunStatus.COMPLETED,
+        "model_complete",
+        2,
+        2,
+    )
+
+    run = run_agent(
+        "Inspect",
+        tmp_path,
+        model=lambda _p, *, timeout: ChatResponse(
+            '{"kind":"tool","name":"list_files","arguments":{}}'
+        ),
+        max_steps=1,
+    )
+    assert run.stop_reason == "step_limit"
+    assert run.steps == run.model_calls == 1
+
+
+def test_invalid_action_streak_stops_and_valid_action_resets(tmp_path: Path) -> None:
+    outputs = iter(
+        [
+            "bad",
+            '{"kind":"tool","name":"list_files","arguments":{}}',
+            "bad",
+            "bad",
+            "bad",
+        ]
+    )
+    run = run_agent(
+        "Inspect",
+        tmp_path,
+        model=lambda _p, *, timeout: ChatResponse(next(outputs)),
+        max_consecutive_invalid_actions=3,
+    )
+    assert run.status is RunStatus.LIMIT_REACHED
+    assert run.stop_reason == "invalid_action_limit"
+    assert run.steps == run.model_calls == 5
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        '{"kind":"tool","name":"unknown","arguments":{}}',
+        '{"kind":"tool","name":"read_file","arguments":{"path":"x","extra":1}}',
+        '{"kind":"tool","name":"read_file","arguments":{"path":"../x"}}',
+    ],
+)
+def test_invalid_tool_error_codes_advance_invalid_streak(
+    tmp_path: Path, answer: str
+) -> None:
+    run = run_agent(
+        "Inspect", tmp_path, model=lambda _p, *, timeout: ChatResponse(answer)
+    )
+    assert run.stop_reason == "invalid_action_limit"
+    assert run.steps == run.model_calls == 3
+
+
+def test_ordinary_tool_error_is_observed_and_resets_invalid_streak(
+    tmp_path: Path, monkeypatch
+) -> None:
+    outputs = iter(
+        [
+            "bad",
+            '{"kind":"tool","name":"read_file","arguments":{"path":"x"}}',
+            "bad",
+            "bad",
+            "bad",
+        ]
+    )
+    monkeypatch.setattr(
+        "harness.tools.dispatcher.execute_tool",
+        lambda action, _root: ToolResult(
+            action.name, False, {}, error_code="io_error", message="read failed"
+        ),
+    )
+    prompts = []
+
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
+        prompts.append(prompt)
+        return ChatResponse(next(outputs))
+
+    run = run_agent("Recover", tmp_path, model=model)
+    assert run.stop_reason == "invalid_action_limit"
+    assert run.model_calls == run.steps == 5
+    assert '"error_code":"io_error"' in prompts[2]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        '{"kind":"complete","summary":"too late"}',
+        '{"kind":"tool","name":"list_files","arguments":{}}',
+    ],
+)
+def test_cancellation_after_model_response_prevents_tool_and_completion(
+    tmp_path: Path, answer: str, monkeypatch
+) -> None:
+    cancelled = False
+    calls = 0
+    tool_calls = 0
+    original = __import__(
+        "harness.tools.dispatcher", fromlist=["execute_tool"]
+    ).execute_tool
+
+    def execute(action, root):
+        nonlocal tool_calls
+        tool_calls += 1
+        return original(action, root)
+
+    monkeypatch.setattr("harness.tools.dispatcher.execute_tool", execute)
+
+    def model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal cancelled, calls
+        calls += 1
+        cancelled = True
+        return ChatResponse(answer)
+
+    run = run_agent("Stop", tmp_path, model=model, cancelled=lambda: cancelled)
+    assert run.status is RunStatus.CANCELLED
+    assert run.stop_reason == "cancelled"
+    assert run.final_response is None
+    assert run.steps == 0 and calls == 1 and tool_calls == 0
+
+
+def test_cancellation_before_model_and_keyboard_interrupt_are_clean(
+    tmp_path: Path,
+) -> None:
+    run = run_agent(
+        "Stop",
+        tmp_path,
+        model=lambda *_a, **_k: pytest.fail("called"),
+        cancelled=lambda: True,
+    )
+    assert run.stop_reason == "cancelled" and run.model_calls == 0
+    run = run_agent(
+        "Stop",
+        tmp_path,
+        model=lambda *_a, **_k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    assert run.status is RunStatus.CANCELLED
+    assert run.stop_reason == "cancelled" and run.model_calls == 1
+
+
+def test_cancellation_after_tool_execution_stops_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cancelled = False
+    original = __import__(
+        "harness.tools.dispatcher", fromlist=["execute_tool"]
+    ).execute_tool
+
+    def execute(action, root):
+        nonlocal cancelled
+        result = original(action, root)
+        cancelled = True
+        return result
+
+    monkeypatch.setattr("harness.tools.dispatcher.execute_tool", execute)
+    run = run_agent(
+        "Stop",
+        tmp_path,
+        model=lambda _p, *, timeout: ChatResponse(
+            '{"kind":"tool","name":"list_files","arguments":{}}'
+        ),
+        cancelled=lambda: cancelled,
+    )
+    assert run.status is RunStatus.CANCELLED and run.stop_reason == "cancelled"
+    assert run.model_calls == run.steps == 1
+
+
+def test_request_timeout_is_forwarded_and_retry_recomputes_remaining_budget(
+    tmp_path: Path, monkeypatch
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(runtime, "monotonic", lambda: now)
+    timeouts = []
+
+    def model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal now
+        timeouts.append(timeout)
+        if len(timeouts) == 1:
+            now = 4.0
+            raise LlamaTransportError("disconnect")
+        return ChatResponse('{"kind":"complete","summary":"ok"}')
+
+    run = run_agent("Retry", tmp_path, model=model, request_timeout=30, run_timeout=20)
+    assert run.status is RunStatus.COMPLETED
+    assert timeouts == [20, 16]
+    assert run.model_calls == 2
+
+
+def test_retry_allowance_resets_after_successful_response(tmp_path: Path) -> None:
+    attempts = 0
+
+    def model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal attempts
+        attempts += 1
+        if attempts in {1, 3}:
+            raise LlamaTransportError("intermittent")
+        if attempts == 2:
+            return ChatResponse('{"kind":"tool","name":"list_files","arguments":{}}')
+        return ChatResponse('{"kind":"complete","summary":"recovered"}')
+
+    run = run_agent("Retry", tmp_path, model=model)
+    assert run.status is RunStatus.COMPLETED
+    assert run.model_calls == 4 and run.steps == 2
+
+
+def test_retry_is_limited_by_call_budget_and_timeout_failure_classification(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def transport(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        raise LlamaTransportError("offline")
+
+    run = run_agent("Retry", tmp_path, model=transport, max_model_calls=1)
+    assert run.status is RunStatus.LIMIT_REACHED
+    assert run.stop_reason == "model_call_limit"
+    assert run.model_calls == calls == 1
+
+    def timeout(_prompt: str, *, timeout: float) -> ChatResponse:
+        raise LlamaTimeoutError("late")
+
+    run = run_agent("Retry", tmp_path, model=timeout)
+    assert run.status is RunStatus.FAILED and run.stop_reason == "model_timeout"
+    assert run.model_calls == 2
+
+
+def test_malformed_client_response_is_not_retried_and_body_limit_has_no_step(
+    tmp_path: Path,
+) -> None:
+    calls = 0
+
+    def malformed(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        raise LlamaClientError("malformed chat response")
+
+    run = run_agent("Fail", tmp_path, model=malformed)
+    assert run.stop_reason == "model_error" and calls == run.model_calls == 1
+
+    run = run_agent(
+        "Fail",
+        tmp_path,
+        model=lambda _p, *, timeout: (_ for _ in ()).throw(
+            LlamaResponseTooLargeError("large")
+        ),
+    )
+    assert run.stop_reason == "model_output_limit"
+    assert run.steps == 0
+
+
+def test_cancellation_and_deadline_take_precedence_after_failed_attempt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    cancelled = False
+
+    def cancelled_model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal cancelled
+        cancelled = True
+        raise LlamaTransportError("disconnect")
+
+    run = run_agent(
+        "Cancel", tmp_path, model=cancelled_model, cancelled=lambda: cancelled
+    )
+    assert run.status is RunStatus.CANCELLED
+    assert run.stop_reason == "cancelled"
+    assert run.model_calls == 1
+
+    now = 0.0
+    monkeypatch.setattr(runtime, "monotonic", lambda: now)
+
+    def late_model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal now
+        now = 5.0
+        raise LlamaTransportError("disconnect")
+
+    run = run_agent("Deadline", tmp_path, model=late_model, run_timeout=4)
+    assert run.status is RunStatus.LIMIT_REACHED
+    assert run.stop_reason == "run_timeout"
+    assert run.model_calls == 1
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        '{"kind":"complete","summary":"late"}',
+        '{"kind":"tool","name":"list_files","arguments":{}}',
+    ],
+)
+def test_success_after_deadline_prevents_completion_and_tool(
+    tmp_path: Path, monkeypatch, answer: str
+) -> None:
+    now = 0.0
+    tool_calls = 0
+    original = __import__(
+        "harness.tools.dispatcher", fromlist=["execute_tool"]
+    ).execute_tool
+
+    def execute(action, root):
+        nonlocal tool_calls
+        tool_calls += 1
+        return original(action, root)
+
+    monkeypatch.setattr(runtime, "monotonic", lambda: now)
+    monkeypatch.setattr("harness.tools.dispatcher.execute_tool", execute)
+
+    def late_model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal now
+        now = 5.0
+        return ChatResponse(answer)
+
+    run = run_agent("Deadline", tmp_path, model=late_model, run_timeout=4)
+    assert run.status is RunStatus.LIMIT_REACHED and run.stop_reason == "run_timeout"
+    assert run.final_response is None and run.steps == 0 and tool_calls == 0
+
+
+def test_cancellation_wins_when_deadline_is_also_exceeded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    now = 0.0
+    cancelled = False
+    monkeypatch.setattr(runtime, "monotonic", lambda: now)
+
+    def late_model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal now, cancelled
+        now = 5.0
+        cancelled = True
+        return ChatResponse('{"kind":"complete","summary":"late"}')
+
+    run = run_agent(
+        "Deadline",
+        tmp_path,
+        model=late_model,
+        run_timeout=4,
+        cancelled=lambda: cancelled,
+    )
+    assert run.status is RunStatus.CANCELLED and run.stop_reason == "cancelled"
+
+
+def test_deadline_reached_between_boundary_check_and_timeout_calculation(
+    tmp_path: Path, monkeypatch
+) -> None:
+    times = iter([0.0, 0.0, 0.0, 0.0, 4.0, 4.0])
+    monkeypatch.setattr(runtime, "monotonic", lambda: next(times))
+    calls = 0
+
+    def model(_prompt: str, *, timeout: float) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        return ChatResponse('{"kind":"complete","summary":"bad"}')
+
+    run = run_agent("Deadline", tmp_path, model=model, run_timeout=4)
+    assert run.stop_reason == "run_timeout"
+    assert run.model_calls == calls == 0
+
+
+@pytest.mark.parametrize(
+    "interrupt,expected",
+    [("cancel", "cancelled"), ("deadline", "run_timeout")],
+)
+def test_cancellation_or_deadline_after_prompt_precedes_prompt_budget(
+    tmp_path: Path, monkeypatch, interrupt: str, expected: str
+) -> None:
+    now = 0.0
+    cancelled = False
+    monkeypatch.setattr(runtime, "monotonic", lambda: now)
+
+    def build_prompt(*_args):
+        nonlocal now, cancelled
+        if interrupt == "cancel":
+            cancelled = True
+        else:
+            now = 5.0
+        return None
+
+    monkeypatch.setattr(runtime, "_build_prompt", build_prompt)
+    run = run_agent(
+        "Prompt",
+        tmp_path,
+        cancelled=lambda: cancelled,
+        run_timeout=4,
+        max_prompt_bytes=1,
+    )
+    assert run.stop_reason == expected
+
+
+def test_oversized_unicode_model_text_stops_before_action_parse(tmp_path: Path) -> None:
+    run = run_agent(
+        "Inspect",
+        tmp_path,
+        model=lambda _p, *, timeout: ChatResponse(
+            '{"kind":"complete","summary":"' + "é" * 40 + '"}'
+        ),
+        max_model_response_bytes=64,
+    )
+    assert run.stop_reason == "model_output_limit"
+    assert run.steps == 1 and run.final_response is None
+
+
+def test_repeated_invalid_json_and_ordinary_tool_error_recover(tmp_path: Path) -> None:
+    outputs = iter(
+        [
+            "[" * 2000 + "]" * 2000,
+            '{"kind":"tool","name":"list_files","arguments":{}}',
+            '{"kind":"complete","summary":"Recovered"}',
+        ]
+    )
+    run = run_agent(
+        "Recover", tmp_path, model=lambda _p, *, timeout: ChatResponse(next(outputs))
+    )
+    assert run.status is RunStatus.COMPLETED
+    assert run.steps == run.model_calls == 3
+
+
 @pytest.mark.parametrize(
     "task,workspace,kwargs",
     [
@@ -315,6 +762,12 @@ def test_invalid_response_excerpt_is_utf8_safe_and_at_most_1kib(
         ("task", Path("missing-workspace"), {}),
         ("task", Path("."), {"max_model_calls": True}),
         ("task", Path("."), {"max_prompt_bytes": 0}),
+        ("task", Path("."), {"max_steps": True}),
+        ("task", Path("."), {"max_consecutive_invalid_actions": 0}),
+        ("task", Path("."), {"request_timeout": float("inf")}),
+        ("task", Path("."), {"run_timeout": True}),
+        ("task", Path("."), {"max_model_response_bytes": 0}),
+        ("task", Path("."), {"cancelled": False}),
     ],
 )
 def test_invalid_invocation_raises_before_model(
@@ -322,7 +775,7 @@ def test_invalid_invocation_raises_before_model(
 ) -> None:
     calls = 0
 
-    def model(_: str) -> ChatResponse:
+    def model(_: str, *, timeout: float) -> ChatResponse:
         nonlocal calls
         calls += 1
         return ChatResponse("")
@@ -334,6 +787,19 @@ def test_invalid_invocation_raises_before_model(
             model=model,
             **kwargs,
         )
+    assert calls == 0
+
+
+def test_legacy_model_signature_is_rejected_before_inference(tmp_path: Path) -> None:
+    calls = 0
+
+    def model(_prompt: str) -> ChatResponse:
+        nonlocal calls
+        calls += 1
+        return ChatResponse("ok")
+
+    with pytest.raises(ValueError, match="timeout"):
+        run_agent("Task", tmp_path, model=model)
     assert calls == 0
 
 

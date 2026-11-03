@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1 local model foundation and the bounded read-only Phase 2 agent loop, state, action protocol, and repository tools are implemented; CLI integration, cancellation, and verification remain planned.
+> **Status:** Phase 1 local model foundation and the bounded read-only Phase 2 agent loop, state, action protocol, repository tools, runtime budgets, timeouts, and cooperative cancellation are implemented; CLI integration and verification remain planned.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -94,7 +94,7 @@ Build the smallest useful multi-step agent: it can inspect a repository and answ
 - [x] Implement tool schema validation and workspace-root restrictions.
 - [x] Implement the read-only loop: assemble bounded prompt → call injected model → parse action → execute tool → record observation.
 - [x] Limit model calls and prompt bytes.
-- [ ] Add maximum steps, timeouts, and cancellation checks.
+- [x] Add maximum steps, timeouts, and cancellation checks.
 - [x] Support model-declared completion while distinguishing the model's proposal from verification evidence.
 - [ ] Add a basic CLI command such as `harness run "Explain this module" --repo ./repo`.
 - [x] Use a fake model callable for deterministic loop tests.

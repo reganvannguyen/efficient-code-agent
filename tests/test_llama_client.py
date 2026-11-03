@@ -1,10 +1,17 @@
 import json
+from http.client import IncompleteRead
 from urllib.error import HTTPError, URLError
 
 import pytest
 
 from harness import llama_client
-from harness.llama_client import ChatResponse, LlamaClientError
+from harness.llama_client import (
+    ChatResponse,
+    LlamaClientError,
+    LlamaResponseTooLargeError,
+    LlamaTimeoutError,
+    LlamaTransportError,
+)
 
 
 class FakeHTTPResponse:
@@ -17,7 +24,8 @@ class FakeHTTPResponse:
     def __exit__(self, *_args) -> None:
         return None
 
-    def read(self) -> bytes:
+    def read(self, size: int = -1) -> bytes:
+        self.read_size = size
         return self.body
 
 
@@ -61,6 +69,14 @@ def test_chat_posts_expected_payload_and_parses_response(monkeypatch) -> None:
         },
         "timeout": 4,
     }
+
+
+def test_chat_reads_at_most_one_mib_plus_sentinel(monkeypatch) -> None:
+    response = FakeHTTPResponse(b"x" * (llama_client.MAX_RESPONSE_BODY_BYTES + 1))
+    monkeypatch.setattr(llama_client, "urlopen", lambda *_a, **_k: response)
+    with pytest.raises(LlamaResponseTooLargeError):
+        llama_client.chat("hello")
+    assert response.read_size == llama_client.MAX_RESPONSE_BODY_BYTES + 1
 
 
 def test_chat_accepts_missing_or_unusable_usage(monkeypatch) -> None:
@@ -147,5 +163,70 @@ def test_chat_wraps_http_connection_and_timeout_errors(monkeypatch, error) -> No
 
     monkeypatch.setattr(llama_client, "urlopen", fail)
 
-    with pytest.raises(LlamaClientError):
+    expected = (
+        LlamaTimeoutError if isinstance(error, TimeoutError) else LlamaClientError
+    )
+    with pytest.raises(expected):
+        llama_client.chat("hello")
+
+
+@pytest.mark.parametrize(
+    "error,expected",
+    [
+        (URLError(TimeoutError("socket timed out")), LlamaTimeoutError),
+        (URLError("connection refused"), LlamaTransportError),
+    ],
+)
+def test_chat_classifies_wrapped_transport_timeouts(
+    monkeypatch, error, expected
+) -> None:
+    monkeypatch.setattr(
+        llama_client, "urlopen", lambda *_a, **_k: (_ for _ in ()).throw(error)
+    )
+    with pytest.raises(expected):
+        llama_client.chat("hello")
+
+
+def test_interrupted_http_body_read_is_transport_error(monkeypatch) -> None:
+    class InterruptedResponse(FakeHTTPResponse):
+        def read(self, size: int = -1) -> bytes:
+            raise IncompleteRead(b"partial")
+
+    monkeypatch.setattr(
+        llama_client,
+        "urlopen",
+        lambda *_a, **_k: InterruptedResponse(b""),
+    )
+    with pytest.raises(LlamaTransportError):
+        llama_client.chat("hello")
+
+
+def test_deeply_nested_http_json_is_a_client_error(monkeypatch) -> None:
+    body = (
+        b'{"choices":[{"message":{"content":"ok"}}],"usage":'
+        + b"[" * 2000
+        + b"]" * 2000
+        + b"}"
+    )
+    monkeypatch.setattr(
+        llama_client,
+        "urlopen",
+        lambda *_a, **_k: FakeHTTPResponse(body),
+    )
+    with pytest.raises(LlamaClientError, match="malformed chat response"):
+        llama_client.chat("hello")
+
+
+def test_overlong_http_json_integer_is_a_client_error(monkeypatch) -> None:
+    monkeypatch.setattr(
+        llama_client,
+        "urlopen",
+        lambda *_a, **_k: FakeHTTPResponse(b"{}"),
+    )
+    monkeypatch.setattr(
+        llama_client.json,
+        "loads",
+        lambda _body: (_ for _ in ()).throw(ValueError("bad integer")),
+    )
+    with pytest.raises(LlamaClientError, match="malformed chat response"):
         llama_client.chat("hello")
