@@ -58,7 +58,7 @@ def parse_action(text: str) -> Action:
             object_pairs_hook=_unique_object,
             parse_constant=_reject_constant,
         )
-    except (json.JSONDecodeError, TypeError, ValueError) as error:
+    except (json.JSONDecodeError, TypeError, ValueError, RecursionError) as error:
         return InvalidAction(str(error))
 
     if not isinstance(payload, dict):

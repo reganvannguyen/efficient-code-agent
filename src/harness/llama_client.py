@@ -5,12 +5,28 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 
 class LlamaClientError(Exception):
     """Raised when a local model request fails or returns an invalid response."""
+
+
+class LlamaTransportError(LlamaClientError):
+    """Raised when the server cannot be reached or the connection fails."""
+
+
+class LlamaTimeoutError(LlamaTransportError):
+    """Raised when a model request or response read times out."""
+
+
+class LlamaResponseTooLargeError(LlamaClientError):
+    """Raised when the server response exceeds the bounded body size."""
+
+
+MAX_RESPONSE_BODY_BYTES = 1_048_576
 
 
 @dataclass(frozen=True)
@@ -62,12 +78,16 @@ def chat(
 
     try:
         with urlopen(request, timeout=timeout) as response:
-            body = response.read()
+            body = response.read(MAX_RESPONSE_BODY_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BODY_BYTES:
+                raise LlamaResponseTooLargeError("model response body exceeded 1 MiB")
     except HTTPError as exc:
         raise LlamaClientError(f"model server returned HTTP {exc.code}") from exc
-    except (URLError, TimeoutError, OSError) as exc:
+    except (URLError, TimeoutError, OSError, HTTPException) as exc:
         reason = getattr(exc, "reason", exc)
-        raise LlamaClientError(f"could not reach model server: {reason}") from exc
+        if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError):
+            raise LlamaTimeoutError(f"model request timed out: {reason}") from exc
+        raise LlamaTransportError(f"could not reach model server: {reason}") from exc
 
     try:
         data = json.loads(body)
@@ -84,10 +104,12 @@ def chat(
     except (
         json.JSONDecodeError,
         UnicodeDecodeError,
+        ValueError,
         KeyError,
         IndexError,
         TypeError,
         AttributeError,
+        RecursionError,
     ) as exc:
         raise LlamaClientError(
             "model server returned a malformed chat response"
