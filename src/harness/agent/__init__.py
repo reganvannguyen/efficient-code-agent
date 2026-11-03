@@ -7,6 +7,7 @@ from harness.agent.protocol import (
     ToolAction,
     parse_action,
 )
+from harness.agent.runtime import run_agent
 from harness.agent.state import AgentRun, RunStatus
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "RunStatus",
     "ToolAction",
     "parse_action",
+    "run_agent",
 ]

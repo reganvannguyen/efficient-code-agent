@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1 local model foundation and Phase 2 state, action protocol, and bounded read-only repository tools implemented; the agent loop remains planned.
+> **Status:** Phase 1 local model foundation and the bounded read-only Phase 2 agent loop, state, action protocol, and repository tools are implemented; CLI integration, cancellation, and verification remain planned.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -92,11 +92,12 @@ Build the smallest useful multi-step agent: it can inspect a repository and answ
 - [x] Define and strictly parse normalized `tool`, `complete`, and `invalid` actions; add `context_edit` in Phase 5 when the model-facing `update_context` tool is introduced.
 - [x] Add `list_files` and bounded `read_file` tools.
 - [x] Implement tool schema validation and workspace-root restrictions.
-- [ ] Implement the loop: assemble prompt → call model → parse action → execute tool → return result.
-- [ ] Add maximum model calls, maximum steps, timeouts, and cancellation checks.
-- [ ] Support model-declared completion with a clear distinction between claims and evidence.
+- [x] Implement the read-only loop: assemble bounded prompt → call injected model → parse action → execute tool → record observation.
+- [x] Limit model calls and prompt bytes.
+- [ ] Add maximum steps, timeouts, and cancellation checks.
+- [x] Support model-declared completion while distinguishing the model's proposal from verification evidence.
 - [ ] Add a basic CLI command such as `harness run "Explain this module" --repo ./repo`.
-- [ ] Use a fake LLM adapter for deterministic loop tests.
+- [x] Use a fake model callable for deterministic loop tests.
 
 ### Tests
 

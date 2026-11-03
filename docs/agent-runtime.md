@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** Phase 2 run-state, action parsing, and bounded read-only `list_files` / `read_file` tools are implemented. The agent loop and remaining runtime components are future work.
+> **Status:** Phase 2 run-state, action parsing, bounded read-only `list_files` / `read_file` tools, and a bounded read-only agent loop are implemented. CLI integration, cancellation, and runtime verification remain future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -113,6 +113,7 @@ class AgentRun:
     steps: int = 0
     model_calls: int = 0
     final_response: str | None = None
+    stop_reason: str | None = None
 
     def transition_to(self, status: RunStatus) -> None: ...
 ```
@@ -121,55 +122,24 @@ class AgentRun:
 
 ### Normalized action protocol
 
-The implemented `parse_action(text: str) -> Action` accepts exactly one JSON object, with surrounding whitespace allowed. The supported envelopes are `{"kind":"tool","name":"...","arguments":{...}}` and `{"kind":"complete","summary":"..."}`. Each object must have exactly its listed keys; tool names and completion summaries must be non-blank strings, and arguments must be an object. Unknown tool names are accepted because dispatch and tool validation are future work. Duplicate keys at any nesting depth, non-standard numeric constants, extra text, multiple values, malformed JSON, unknown action kinds, and wrong field types produce `InvalidAction` instead of raising. A completion action is only a model proposal and parsing it does not change run state. The `invalid` discriminator exists on `InvalidAction` as the parser's normalized error result; model-supplied `kind: "invalid"` is unsupported input.
+The implemented `parse_action(text: str) -> Action` accepts exactly one JSON object, with surrounding whitespace allowed. The supported envelopes are `{"kind":"tool","name":"...","arguments":{...}}` and `{"kind":"complete","summary":"..."}`. Each object must have exactly its listed keys; tool names and completion summaries must be non-blank strings, and arguments must be an object. Unknown tool names are accepted by parsing and returned as structured dispatcher errors by the loop. Duplicate keys at any nesting depth, non-standard numeric constants, extra text, multiple values, malformed JSON, unknown action kinds, and wrong field types produce `InvalidAction` instead of raising. A completion action is only a model proposal and parsing it does not change run state. The `invalid` discriminator exists on `InvalidAction` as the parser's normalized error result; model-supplied `kind: "invalid"` is unsupported input.
 
 ## 4. Agent loop contract
 
-The loop below is a future design example; no loop currently consumes `AgentRun` or `parse_action`. Tool implementations, prompt construction, and persistence belong behind interfaces.
+`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable, prompt-byte and model-call limits, and the existing repository dispatcher. It assembles a pinned task/policy prompt, removes oldest complete action/observation exchanges to fit the UTF-8 byte budget, parses one response, dispatches read-only tools, and returns the terminal `AgentRun`. Invalid responses are observed with generic feedback and a UTF-8-safe excerpt capped at 1 KiB. A `LlamaClientError` fails the run without retry. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit.
 
 ```python
-def run_agent(run, context_manager, llm, tools, verifier, recorder, limits):
-    run.status = RunStatus.RUNNING
-
-    while run.status == RunStatus.RUNNING:
-        stop_reason = limits.check(run)
-        if stop_reason:
-            run.status = stop_reason
-            break
-
-        prompt = context_manager.build(run)  # Must fit configured budget
-        response = llm.generate(prompt)
-        run.model_calls += 1
-        limits.record_usage(run, response.usage)
-
-        action = parse_response(response)
-
-        if action.kind == "tool":
-            result = tools.validate_and_execute(action, run.workspace)
-            context_manager.observe(run, action, result)
-
-        elif action.kind == "context_edit":
-            result = context_manager.apply_edit(run, action)
-            context_manager.observe(run, action, result)
-
-        elif action.kind == "complete":
-            result = verifier.check(run, action)
-            if result.accepted:
-                run.status = RunStatus.COMPLETED
-            else:
-                context_manager.observe(run, action, result)
-
-        else:
-            result = handle_invalid_response(action)
-
-        recorder.record_step(run, action, result)
-        run.steps += 1
-
-    recorder.finish_run(run)
-    return run
+run_agent(
+    task: str,
+    workspace: Path,
+    *,
+    model: Callable[[str], ChatResponse] = chat,
+    max_model_calls: int = 20,
+    max_prompt_bytes: int = 24576,
+) -> AgentRun
 ```
 
-**Important:** This pseudocode omits production-level exception handling, asynchronous approval waiting, cancellation, and resource cleanup. In implementation, `try/finally` must persist the terminal state and clean up. Model failures and parse errors must be counted toward budgets even if no valid action is produced.
+The current implementation has no persistence, asynchronous approval, cancellation, or resource cleanup. Model failures and parse errors count toward their respective model-call and step counters, and the model-call limit is checked before the next inference attempt.
 
 ### Loop invariants
 
