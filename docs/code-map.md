@@ -1,9 +1,10 @@
 # Implemented code map
 
 This guide describes the code that exists today. The Python package currently
-supports a one-request chat command, a stateless interactive prompt loop, and the
-initial agent run-state and action parsing contracts; the autonomous agent loop
-and its planned tools are future work. Interactive prompts
+supports a one-request chat command, a stateless interactive prompt loop, the
+initial agent run-state and action parsing contracts, and direct dispatch of
+bounded read-only repository tools. The autonomous agent loop and CLI integration
+remain future work. Interactive prompts
 are independent requests with no conversation history. This page is maintained
 alongside code changes, not generated or refreshed by an automatic watcher.
 
@@ -32,8 +33,25 @@ flowchart LR
 modules in this repository. In interactive mode Python sends each nonblank
 prompt as its own non-streaming chat request, without carrying conversation
 history between requests. The one-shot `chat PROMPT` command remains available.
-The action parser is not connected to this request flow. There is no repository
-inspection, tool dispatch, multi-step agent loop, or autonomous editing.
+The action parser and repository dispatcher are not connected to the chat request
+flow. There is no multi-step agent loop, prompt assembly for tools, or autonomous
+editing. A caller can parse a model action and pass a `ToolAction` to the read-only
+dispatcher directly.
+
+## Read-only tool flow
+
+```mermaid
+flowchart LR
+    A[ToolAction] --> B[harness.tools.dispatcher.execute_tool]
+    B --> C[Validate exact schema]
+    C --> D[Resolve canonical workspace]
+    D --> E{Tool name}
+    E -->|list_files| F[harness.tools.repository.list_files]
+    E -->|read_file| G[harness.tools.repository.read_file]
+    F --> H[ToolResult]
+    G --> H
+    H --> I[to_dict: bounded JSON]
+```
 
 ## Package files
 
@@ -46,6 +64,9 @@ inspection, tool dispatch, multi-step agent loop, or autonomous editing.
 | [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state and normalized action protocol types and parser. |
 | [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses, mutable `AgentRun` state and counters, and permitted state transitions. |
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope. |
+| [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
+| [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates the supported tool schemas before filesystem access, resolves the workspace, and dispatches `list_files` / `read_file`. |
+| [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks. |
 
 ## Agent runtime contracts
 
@@ -66,14 +87,67 @@ fields but does not increment them.
 dataclasses with fixed `kind` values `tool`, `complete`, and `invalid`.
 `Action` is their union. `parse_action(text: str) -> Action` accepts exact
 `tool` and `complete` object envelopes, rejects malformed or ambiguous JSON as
-`InvalidAction`, and leaves tool-name and argument semantics to future dispatch
-code. Parsing a completion proposal does not change an `AgentRun`.
+`InvalidAction`, and leaves tool argument semantics to dispatch. Parsing a
+completion proposal does not change an `AgentRun`.
 
 The parser's private `_unique_object(pairs: list[tuple[str, object]]) ->
 dict[str, object]` hook rejects duplicate keys at every object depth, and
 `_reject_constant(value: str) -> None` rejects non-standard JSON numeric
 constants. These contracts are implemented but are not yet called by the CLI
 or an agent loop.
+
+### Read-only repository tool APIs
+
+`execute_tool(action: ToolAction, workspace: Path) -> ToolResult` supports only
+`list_files` and `read_file`. It checks the exact argument schema and types
+before resolving the existing workspace directory. Unknown tools and invalid
+requests return a structured failure. Workspace paths must be relative and
+stay within the canonical workspace after symlink resolution. This check does
+not protect against hostile concurrent filesystem changes.
+
+`list_files(root: Path, arguments: dict[str, object]) -> ToolResult` accepts
+optional `directory` (default `.`) and positive nonblank string `pattern`. It calls ripgrep
+without a shell, strips `RIPGREP_CONFIG_PATH`, disables global Git ignores,
+and retains repository ignore handling in Git and non-Git workspaces. The
+pattern filters discovered workspace-relative paths using `Path.match`; it
+cannot override ignore rules. Hidden paths and generated directories
+(`node_modules`, `.venv`, `__pycache__`, `dist`, `build`) are always filtered.
+Results are sorted and limited by 200 paths, 64 KiB of ripgrep output, and a
+five-second timeout. No matches is a successful empty result. `rg` must be
+installed separately.
+
+`read_file(root: Path, arguments: dict[str, object]) -> ToolResult` requires
+`path` and accepts optional positive integer `start_line` and `end_line` values
+(inclusive). It reads at most 1 MiB plus one sentinel byte, rejects non-regular
+files, NUL bytes, and invalid UTF-8, and returns at most 200 numbered lines and
+16 KiB of content. Results include relative path, byte size, total lines, and
+actual returned line bounds; empty results use null bounds. `truncated` reports
+omitted ranges or content.
+
+`ToolResult(tool: str, ok: bool, data: dict[str, object], truncated: bool =
+False, error_code: str | None = None, message: str | None = None)` is a frozen
+dataclass. Its `__post_init__()` bounds result metadata and payload to 32 KiB;
+`to_dict() -> dict[str, object]` returns the JSON-ready form. `_json_size(value:
+object) -> int` measures the ASCII-escaped JSON size so the cap also holds for
+Unicode content.
+
+Dispatcher internals: `_validate_schema(tool: str, arguments: dict[str,
+object]) -> None` owns exact field/type/range validation; `_validate_relative(path:
+str) -> None` rejects absolute, NUL, and parent-traversal paths;
+`_line_number(value: object, name: str) -> int` rejects booleans and nonpositive
+integers; `_workspace(workspace: Path) -> Path` resolves the existing canonical
+directory; `_error(tool: str, code: str, message: str) -> ToolResult` builds a
+controlled failure.
+
+Repository helpers: `_run_bounded(command: list[str], root: Path, env: dict[str,
+str], pattern: str | None) -> tuple[bytes, bool, int]` streams ripgrep output
+with byte, path-count, and time limits, killing and reaping the process when a
+limit is reached. `_accept_path(raw: bytes, root: Path, pattern: str | None) ->
+str | None` enforces containment, exclusions, and the positive path filter,
+returning a normalized workspace-relative path when accepted;
+`_resolve(root: Path, path: str) -> Path` resolves a path inside the workspace;
+`_limit_utf8(value: str, limit: int) -> tuple[str, bool]` cuts content without
+returning invalid UTF-8.
 
 The `harness` console script registered in `pyproject.toml` points to
 `harness.cli:main`, the same entry point used by `python -m harness`.
