@@ -187,7 +187,7 @@ for the tested server configuration and details.
 ## Read-only repository task CLI
 
 Use `harness run TASK` to let the model inspect a repository through the
-bounded `list_files` and `read_file` tools. The repository defaults to the
+bounded `list_files`, `search_code`, and `read_file` tools. The repository defaults to the
 current directory. The agent cannot edit files or run commands. A completed
 status means the model proposed an answer; it is unverified and does not prove
 that the answer is correct.
@@ -219,6 +219,15 @@ contents. Its `pattern` is a Python `Path.match` glob, not a regular expression:
 “either filename”; request each name with a separate call. If a filtered list
 is empty, try a simpler pattern or an unfiltered listing before concluding
 that a path is absent.
+
+For text discovery, `search_code` accepts a regular-expression `query` (up to
+4096 UTF-8 bytes), an optional filename `glob` using Python `Path.match` syntax,
+and an optional `max_results` from 1 to 200 (default 50). Escape punctuation
+when searching for a literal string. Results contain sorted workspace-relative
+paths, 1-based line numbers, and previews; files and output are bounded, and a
+truncation flag marks incomplete results. A successful empty result means no
+match was found in the bounded visible workspace search. Use `read_file` to
+inspect matching source before answering questions about file contents.
 
 The final answer is the only content written to stdout. Run status, stop reason,
 model-call and step counts, and the unverified-completion label go to stderr.

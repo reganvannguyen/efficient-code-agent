@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** Phase 2 run-state, action parsing, bounded read-only `list_files` / `read_file` tools, independent runtime budgets, request/run timeouts, retry, cooperative cancellation, and CLI integration are implemented. Live-model acceptance and runtime verification remain future work.
+> **Status:** The Phase 2 read-only CLI and Phase 3 bounded lexical `search_code` tool are implemented, with deterministic tests and local smoke evidence. Editing and runtime verification remain future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -124,7 +124,7 @@ The implemented `parse_action(text: str) -> Action` accepts exactly one JSON obj
 
 ## 4. Agent loop contract
 
-`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable and independent budgets for model attempts, processed steps, consecutive invalid actions, request duration, total run duration, prompt bytes, and model response bytes. Its pinned prompt describes separate `list_files`, `read_file`, and `complete` JSON schemas, prohibits Markdown fences, and directs the model to use listing for path-only questions and file reads when contents are requested. It explains that `pattern` uses `Path.match` glob syntax rather than regular expressions and that an empty filtered listing should be retried with a simpler or unfiltered request. The prompt's next-action directive is included in the byte budget after the retained history. Invalid responses are observed with corrective feedback that repeats the exact `read_file` schema and clarifies that the tool name belongs in `name`; the original response excerpt remains capped at 1 KiB. The `run` CLI sends the separate `READ_ONLY_SYSTEM_PROMPT` system message and binds a JSON Schema for both tool requests and completion to the llama.cpp client's `response_format`. It subtracts the system message's UTF-8 byte length from the user-prompt budget, keeping both message contents within the default 24 KiB cap. `run_agent()`'s injected model contract remains `model(prompt, *, timeout=seconds)`; custom callables still receive no schema or system-message argument. Generation constraints do not replace strict parsing, dispatcher validation, or independent verification. A typed transport or timeout error gets one immediate retry using the same prompt; malformed server responses are not retried. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit. Schema-constrained JSON requires a compatible llama.cpp server build; see the [server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1chatcompletions-openai-compatible-chat-completions-api).
+`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable and independent budgets for model attempts, processed steps, consecutive invalid actions, request duration, total run duration, prompt bytes, and model response bytes. Its pinned prompt describes separate `list_files`, `search_code`, `read_file`, and `complete` JSON schemas, prohibits Markdown fences, and directs the model to use listing for path-only questions and file reads when contents are requested. It explains that `pattern` uses `Path.match` glob syntax rather than regular expressions and that an empty filtered listing should be retried with a simpler or unfiltered request. The prompt's next-action directive is included in the byte budget after the retained history. Invalid responses are observed with corrective feedback that repeats the exact `read_file` schema and clarifies that the tool name belongs in `name`; the original response excerpt remains capped at 1 KiB. The `run` CLI sends the separate `READ_ONLY_SYSTEM_PROMPT` system message and binds a JSON Schema for both tool requests and completion to the llama.cpp client's `response_format`. It subtracts the system message's UTF-8 byte length from the user-prompt budget, keeping both message contents within the default 24 KiB cap. `run_agent()`'s injected model contract remains `model(prompt, *, timeout=seconds)`; custom callables still receive no schema or system-message argument. Generation constraints do not replace strict parsing, dispatcher validation, or independent verification. A typed transport or timeout error gets one immediate retry using the same prompt; malformed server responses are not retried. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit. Schema-constrained JSON requires a compatible llama.cpp server build; see the [server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1chatcompletions-openai-compatible-chat-completions-api).
 
 ```python
 run_agent(
@@ -215,7 +215,7 @@ Failures must be equally structured: `ok: false`, stable `error_code`, and a con
 ### Implemented read-only tools
 
 `harness.tools.dispatcher.execute_tool(action: ToolAction, workspace: Path) -> ToolResult`
-currently dispatches only `list_files` and `read_file`. It validates exact field
+currently dispatches `list_files`, `search_code`, and `read_file`. It validates exact field
 sets and value types before resolving the workspace, and returns a frozen
 `ToolResult(tool, ok, data, truncated, error_code, message)`. Call
 `to_dict()` for its JSON-ready representation; the serialized result is capped
@@ -236,6 +236,17 @@ at 32 KiB. Unsupported names and malformed requests return controlled errors.
   `__pycache__`, `dist`, and `build` are excluded even when a pattern matches.
   Results are sorted and limited to 200 paths, 64 KiB of ripgrep output, and
   five seconds.
+- `search_code` requires a nonblank single-line regex `query` (up to 4096 UTF-8
+  bytes), with optional positive `Path.match` filename `glob` and `max_results`
+  from 1 to 200 (default 50). It preflights the regex against empty stdin, then
+  searches visible files up to 1 MiB with a shared five-second deadline.
+  Results contain relative `path`, 1-based `line`, and a UTF-8 `preview` capped
+  at 512 bytes. Match-count and byte caps stop the subprocess; stdout is capped
+  at 64 KiB and stderr at 4 KiB. Partial capped events are discarded, and
+  omitted results or clipped previews set `truncated`. Unsupported UTF-8
+  previews are skipped. Empty success, invalid regex, unavailable ripgrep,
+  timeout, and execution errors remain distinct. Queries use regex syntax;
+  filename globs filter after discovery and cannot override ignore rules.
 - `read_file` requires a relative `path`, with optional positive integer
   `start_line` and `end_line` (inclusive). The default range is at most 200
   lines from `start_line` (default 1). It accepts regular UTF-8 text files up
@@ -247,12 +258,12 @@ at 32 KiB. Unsupported names and malformed requests return controlled errors.
   artificial maximum; dispatcher validation requires `end_line >= start_line`
   and a requested range of at most 200 lines.
 
-Both tools resolve the workspace and target canonically, reject absolute paths,
+The repository tools resolve the workspace and target canonically, reject absolute paths,
 `..` components, and symlink escapes, and permit symlinks that resolve inside
 the workspace. Explicit reads can access hidden or ignored files. The boundary
 does not defend against hostile concurrent filesystem mutation between checks
 and reads; it is not an OS sandbox. These tools do not write files or execute
-repository code. `list_files` requires `rg` on `PATH`.
+repository code. `list_files` and `search_code` require `rg` on `PATH`.
 
 `update_context` is the MVP write interface for working notes; a separate `save_memory` tool is deferred. The model-facing `update_context` request is normalized by the LLM adapter into the runtime's `context_edit` action kind. Keep the core repository tool interface common across retrieval strategies; symbol maps and ranking can initially be implemented behind `search_code` and `read_file`.
 

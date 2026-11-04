@@ -31,6 +31,7 @@ class ToolResult:
         truncated = self.truncated or tool_truncated
         result = self._as_dict(data, truncated)
         while _json_size(result) > MAX_RESULT_BYTES:
+            matches = data.get("matches")
             content = data.get("content")
             paths = data.get("paths")
             if isinstance(content, str) and content:
@@ -48,6 +49,8 @@ class ToolResult:
                         if content and isinstance(data["start_line"], int)
                         else None
                     )
+            elif isinstance(matches, list) and matches:
+                data["matches"] = matches[: len(matches) // 2]
             elif isinstance(paths, list) and paths:
                 data["paths"] = paths[: len(paths) // 2]
             else:
@@ -88,7 +91,7 @@ def execute_tool(action: ToolAction, workspace: Path) -> ToolResult:
         return _error("", "invalid_arguments", "expected a ToolAction")
     if not isinstance(action.name, str) or not action.name.strip():
         return _error("", "invalid_arguments", "tool name must be a non-blank string")
-    if action.name not in {"list_files", "read_file"}:
+    if action.name not in {"list_files", "read_file", "search_code"}:
         return _error(action.name, "unknown_tool", "unsupported tool")
     if not isinstance(action.arguments, dict):
         return _error(action.name, "invalid_arguments", "arguments must be an object")
@@ -96,9 +99,12 @@ def execute_tool(action: ToolAction, workspace: Path) -> ToolResult:
         _validate_schema(action.name, action.arguments)
         root = _workspace(workspace)
         from harness.tools.repository import list_files, read_file
+        from harness.tools.search import search_code
 
         if action.name == "list_files":
             return list_files(root, action.arguments)
+        if action.name == "search_code":
+            return search_code(root, action.arguments)
         return read_file(root, action.arguments)
     except ToolFailure as error:
         return _error(action.name, error.code, error.message)
@@ -132,6 +138,8 @@ def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
     allowed = (
         {"directory", "pattern"}
         if tool == "list_files"
+        else {"query", "glob", "max_results"}
+        if tool == "search_code"
         else {"path", "start_line", "end_line"}
     )
     required = {"path"} if tool == "read_file" else set()
@@ -150,6 +158,56 @@ def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
         ):
             raise ToolFailure("invalid_arguments", "pattern must be a positive glob")
         _validate_relative(directory)
+        return
+    if tool == "search_code":
+        allowed = {"query", "glob", "max_results"}
+        if arguments.keys() - allowed or "query" not in arguments:
+            raise ToolFailure(
+                "invalid_arguments", "arguments do not match the tool schema"
+            )
+        query = arguments["query"]
+        if (
+            not isinstance(query, str)
+            or not query.strip()
+            or "\x00" in query
+            or "\n" in query
+            or "\r" in query
+        ):
+            raise ToolFailure("invalid_arguments", "query must be one non-blank line")
+        try:
+            if len(query.encode("utf-8")) > 4096:
+                raise ToolFailure("invalid_arguments", "query exceeds 4096 UTF-8 bytes")
+        except UnicodeEncodeError:
+            raise ToolFailure(
+                "invalid_arguments", "query must be valid UTF-8"
+            ) from None
+        if "glob" in arguments:
+            glob = arguments["glob"]
+            if (
+                not isinstance(glob, str)
+                or not glob.strip()
+                or glob.startswith("!")
+                or "\x00" in glob
+                or Path(glob).is_absolute()
+                or PureWindowsPath(glob).is_absolute()
+                or PureWindowsPath(glob).drive
+                or ".." in Path(glob).parts
+                or ".." in PureWindowsPath(glob).parts
+            ):
+                raise ToolFailure(
+                    "invalid_arguments",
+                    "glob must be a positive workspace-relative glob",
+                )
+        if "max_results" in arguments:
+            maximum = arguments["max_results"]
+            if (
+                isinstance(maximum, bool)
+                or not isinstance(maximum, int)
+                or not 1 <= maximum <= 200
+            ):
+                raise ToolFailure(
+                    "invalid_arguments", "max_results must be an integer from 1 to 200"
+                )
         return
     path = arguments["path"]
     if not isinstance(path, str) or not path.strip():

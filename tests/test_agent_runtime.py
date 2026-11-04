@@ -18,7 +18,7 @@ from harness.tools import ToolResult, execute_tool
 
 
 def test_read_only_action_schema_has_exact_tool_and_completion_variants() -> None:
-    list_files, read_file, completion = READ_ONLY_ACTION_SCHEMA["oneOf"]
+    search_code, list_files, read_file, completion = READ_ONLY_ACTION_SCHEMA["oneOf"]
 
     assert READ_ONLY_ACTION_SCHEMA["type"] == "object"
     for tool in (list_files, read_file):
@@ -61,6 +61,15 @@ def test_read_only_action_schema_has_exact_tool_and_completion_variants() -> Non
         assert "maximum" not in read_arguments["properties"][line_field]
     assert read_arguments["additionalProperties"] is False
     assert completion["required"] == ["kind", "summary"]
+    search_args = search_code["properties"]["arguments"]
+    assert search_code["properties"]["name"]["const"] == "search_code"
+    assert search_args["required"] == ["query"]
+    assert set(search_args["properties"]) == {"query", "glob", "max_results"}
+    assert search_args["properties"]["max_results"] == {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 200,
+    }
     assert set(completion["properties"]) == {"kind", "summary"}
     assert completion["properties"]["kind"]["const"] == "complete"
     assert completion["properties"]["summary"]["type"] == "string"

@@ -381,6 +381,31 @@ def test_run_real_runtime_reads_fixture_files_and_preserves_them(
     assert {p.name: p.read_bytes() for p in repo.iterdir() if p.is_file()} == before
 
 
+def test_run_searches_then_reads_matching_file(monkeypatch, tmp_path, capsys):
+    repo = copy_fixture(tmp_path)
+    prompts = []
+    responses = iter(
+        [
+            action("tool", name="search_code", arguments={"query": "GREETING_PREFIX"}),
+            action("tool", name="read_file", arguments={"path": "settings.py"}),
+            action("complete", summary="The prefix is Hello."),
+        ]
+    )
+
+    def fake_chat(prompt, **_kwargs):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(cli, "chat", fake_chat)
+    cli.main(["run", "Find the greeting prefix", "--repo", str(repo)])
+
+    captured = capsys.readouterr()
+    assert captured.out == "The prefix is Hello.\n"
+    assert "status=completed" in captured.err
+    assert "settings.py" in prompts[1]
+    assert "GREETING_PREFIX" in prompts[2] and "Hello" in prompts[2]
+
+
 @pytest.mark.parametrize(
     "args",
     [
