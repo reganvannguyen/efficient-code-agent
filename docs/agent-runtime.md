@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** The Phase 2 read-only CLI and Phase 3 bounded lexical `search_code` tool are implemented, with deterministic tests and local smoke evidence. Editing and runtime verification remain future work.
+> **Status:** The Phase 2 read-only CLI, Phase 3 bounded lexical `search_code`, and separately authorized low-level `edit_file` API are implemented. Autonomous editing and runtime verification remain future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -212,10 +212,12 @@ Failures must be equally structured: `ok: false`, stable `error_code`, and a con
 | `update_context` | Edit operation, target, content | Accepted/rejected, new size | Only editable notes; size cap |
 | `read_memory` | Task-scoped memory key | Selected findings/note content | Scope and token limits |
 
-### Implemented read-only tools
+### Implemented tool APIs
 
-`harness.tools.dispatcher.execute_tool(action: ToolAction, workspace: Path) -> ToolResult`
-currently dispatches `list_files`, `search_code`, and `read_file`. It validates exact field
+`harness.tools.dispatcher.execute_tool(action: ToolAction, workspace: Path, *, allow_edits: bool = False) -> ToolResult`
+dispatches `list_files`, `search_code`, and `read_file`; it recognizes `edit_file`
+only when a direct caller explicitly passes `allow_edits=True`. The CLI and agent
+runtime keep the read-only action schema and use the default `False` value. It validates exact field
 sets and value types before resolving the workspace, and returns a frozen
 `ToolResult(tool, ok, data, truncated, error_code, message)`. Call
 `to_dict()` for its JSON-ready representation; the serialized result is capped
@@ -258,12 +260,34 @@ at 32 KiB. Unsupported names and malformed requests return controlled errors.
   artificial maximum; dispatcher validation requires `end_line >= start_line`
   and a requested range of at most 200 lines.
 
-The repository tools resolve the workspace and target canonically, reject absolute paths,
-`..` components, and symlink escapes, and permit symlinks that resolve inside
-the workspace. Explicit reads can access hidden or ignored files. The boundary
-does not defend against hostile concurrent filesystem mutation between checks
-and reads; it is not an OS sandbox. These tools do not write files or execute
-repository code. `list_files` and `search_code` require `rg` on `PATH`.
+- `read_file` also returns the lowercase SHA-256 of the complete original file
+  bytes, independent of the requested line range. Use it as the edit
+  precondition.
+- `edit_file` requires exactly `path`, `expected_sha256`, `old_text`, and
+  `new_text`. It accepts one existing UTF-8 regular file up to 1 MiB, rejects
+  NUL/binary data, protected path components (`.git`, `.codex`, `.ssh`, virtual
+  environments, generated/build/cache directories, and `.env*` files), any
+  symlink component, hard links, and nonwritable files/directories. It checks
+  the current hash and requires `old_text` to occur exactly once; empty text
+  matches only an empty file. It stages a same-directory temporary file, fsyncs
+  it, then rechecks file identity and bytes before `os.replace`. The original
+  mode and all bytes outside the replacement are preserved. Identical
+  replacements return `write_state="unchanged"` without writing. Results carry
+  `path`, confirmed `changed_paths`, `write_state` (`unchanged`, `applied`, or
+  `unknown`), and an actual unified diff capped at 16 KiB; the JSON result stays
+  within 32 KiB and marks a clipped diff as truncated. Failed preconditions
+  return ordinary empty-data errors. Errors during replacement are reconciled
+  against the target bytes and report an audit result; an unreadable outcome is
+  `unknown`. A hard process kill cannot report or roll back a replacement, and
+  a hostile filesystem race after the final content/identity check is outside
+  the trusted-filesystem assumption. This primitive does not authorize the
+  agent runtime, create files, delete files, run commands, or edit multiple
+  files.
+
+Read/list/search resolve paths within the workspace; read permits in-workspace
+symlinks. Editing rejects all symlink components and applies its additional
+protected-path and single-file rules above. These checks are not an OS sandbox.
+`list_files` and `search_code` require `rg` on `PATH`.
 
 `update_context` is the MVP write interface for working notes; a separate `save_memory` tool is deferred. The model-facing `update_context` request is normalized by the LLM adapter into the runtime's `context_edit` action kind. Keep the core repository tool interface common across retrieval strategies; symbol maps and ranking can initially be implemented behind `search_code` and `read_file`.
 

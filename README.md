@@ -2,7 +2,7 @@
 
 **A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
 
-> **Status:** Early development. The local chat command, stateless interactive loop, and bounded read-only repository agent are implemented. Editing, execution, and independent verification remain future work.
+> **Status:** Early development. The local chat command, stateless interactive loop, and bounded read-only repository agent are implemented. A separately authorized low-level single-file edit tool is available to Python callers; CLI/runtime editing, execution, and independent verification remain future work.
 
 ## Why this project?
 
@@ -191,6 +191,11 @@ bounded `list_files`, `search_code`, and `read_file` tools. The repository defau
 current directory. The agent cannot edit files or run commands. A completed
 status means the model proposed an answer; it is unverified and does not prove
 that the answer is correct.
+
+Python callers may invoke `harness.tools.execute_tool(..., allow_edits=True)` to
+authorize one exact `edit_file` request. This API is not enabled by the CLI or
+agent runtime. Edits require the current SHA-256 from `read_file`, match one
+unique exact text fragment, and return a bounded unified diff and write state.
 
 ```bash
 harness run "Explain how greeting.py combines its prefix and name" --repo ./tests/fixtures/read_only_repo
