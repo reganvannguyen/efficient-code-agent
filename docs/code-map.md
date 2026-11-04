@@ -71,8 +71,10 @@ flowchart LR
     C --> D[Resolve canonical workspace]
     D --> E{Tool name}
     E -->|list_files| F[harness.tools.repository.list_files]
+    E -->|search_code| S[harness.tools.search.search_code]
     E -->|read_file| G[harness.tools.repository.read_file]
     F --> H[ToolResult]
+    S --> H
     G --> H
     H --> I[to_dict: bounded JSON]
 ```
@@ -88,10 +90,11 @@ flowchart LR
 | [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, and `run_agent`. |
 | [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses, mutable `AgentRun` state, counters, stop reason, and permitted state transitions. |
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
-| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines the CLI's system prompt and two-tool action schema; pins exact `tool` / `complete` action formats and repository inspection instructions in the user prompt; gives invalid responses corrective `read_file` schema feedback; validates model timeout compatibility and runtime limits, checks cooperative cancellation and deadlines, retries one typed transport failure, and runs the read-only loop within independent budgets. |
+| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines the CLI's system prompt and three-tool action schema; pins exact `tool` / `complete` action formats and repository inspection instructions in the user prompt; gives invalid responses corrective `read_file` schema feedback; validates model timeout compatibility and runtime limits, checks cooperative cancellation and deadlines, retries one typed transport failure, and runs the read-only loop within independent budgets. |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
-| [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates the supported tool schemas before filesystem access, resolves the workspace, and dispatches `list_files` / `read_file`. |
+| [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates the supported tool schemas before filesystem access, resolves the workspace, and dispatches `list_files` / `search_code` / `read_file`. |
 | [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks. |
+| [`src/harness/tools/search.py`](../src/harness/tools/search.py) | Validates regular expressions with ripgrep, runs bounded JSON lexical search under one deadline, filters workspace-relative matches and filename globs, deduplicates path/line hits, and returns sorted bounded previews. |
 
 ## Agent runtime contracts
 
@@ -127,8 +130,9 @@ as a step; an oversized HTTP body stops without a step. Invalid tool/protocol
 actions advance the invalid streak; ordinary tool errors are observations and
 reset it. Only completion sets `final_response`.
 
-`READ_ONLY_ACTION_SCHEMA` in `runtime.py` permits exactly three object forms:
-`list_files` with optional `directory` / `pattern` strings, `read_file` with
+`READ_ONLY_ACTION_SCHEMA` in `runtime.py` permits exactly four object forms:
+`list_files` with optional `directory` / `pattern` strings, `search_code` with
+required `query` and optional `glob` / `max_results`, `read_file` with
 required `path` and optional positive integer line bounds, or `complete` with a
 nonempty `summary`. Tool argument objects and action objects reject extra
 fields. The schema requires strings to have at least one character; the
@@ -142,7 +146,7 @@ The CLI subtracts its UTF-8 byte length from `max_prompt_bytes`, keeping the
 system and user message contents together within the 24 KiB default.
 
 Prompt assembly pins the original task and safety/protocol instructions,
-including exact `list_files`, `read_file`, and `complete` examples, the allowed
+including exact `list_files`, `search_code`, `read_file`, and `complete` examples, the allowed
 `kind` values, and guidance to use listing for path-only questions and read
 requested contents before answering; it then includes chronological JSON
 action/observation exchanges and a next-action directive. To stay within the
@@ -191,8 +195,8 @@ constants. The CLI does not use these APIs; `run_agent()` calls
 
 ### Read-only repository tool APIs
 
-`execute_tool(action: ToolAction, workspace: Path) -> ToolResult` supports only
-`list_files` and `read_file`. It checks the exact argument schema and types
+`execute_tool(action: ToolAction, workspace: Path) -> ToolResult` supports
+`list_files`, `search_code`, and `read_file`. It checks the exact argument schema and types
 before resolving the existing workspace directory. Unknown tools and invalid
 requests return a structured failure. Workspace paths must be relative and
 stay within the canonical workspace after symlink resolution. This check does
@@ -217,6 +221,33 @@ results include a message explaining literal `|` and suggesting simpler or
 unfiltered searches. `rg` must be
 installed separately.
 
+`search_code(root: Path, arguments: dict[str, object]) -> ToolResult` requires
+a nonblank, single-line regex query up to 4096 UTF-8 bytes, with optional
+positive `Path.match` filename glob and integer result limit 1–200 (default
+50). It preflights regex syntax then invokes ripgrep with JSON output, fixed
+hidden/generated exclusions, workspace ignore rules, and a shared five-second
+deadline. It accepts UTF-8 matching lines from files at most 1 MiB, filters
+glob and containment after discovery, deduplicates path/line matches, and sorts
+the collected results. Previews are limited to 512 UTF-8 bytes; stdout to
+64 KiB, stderr to 4 KiB, and the serialized result to 32 KiB. Match-count or
+byte-limit stops and preview clipping set `truncated`; unsupported UTF-8
+previews are skipped. A successful empty result means no visible bounded match
+was found. `rg` must be installed separately.
+
+Search helpers in `harness.tools.search`:
+
+- `_collect_match(raw: bytes, root: Path, glob: object, seen: set[tuple[str,
+  int]], matches: list[dict[str, object]]) -> bool` validates a complete JSON
+  event, appends an accepted unique line, and reports preview clipping. It skips
+  unsupported UTF-8 previews and rejects malformed events as controlled errors.
+- `_run(command: list[str], root: Path, env: dict[str, str], deadline: float,
+  *, stdout_limit: int, stderr_limit: int, stdin: int = subprocess.DEVNULL,
+  on_stdout_line: Callable[[bytes], bool] | None = None) -> tuple[bytes, bytes,
+  bool, int]` captures bounded stdout/stderr and delivers complete stdout lines
+  to a callback. A true callback result stops collection. It reaps the child on
+  every exit and drains bounded stderr after a limit stop so execution errors
+  remain visible. `_OutputCap` is its private limit-stop signal.
+
 `read_file(root: Path, arguments: dict[str, object]) -> ToolResult` requires
 `path` and accepts optional positive integer `start_line` and `end_line` values
 (inclusive). It reads at most 1 MiB plus one sentinel byte, rejects non-regular
@@ -227,7 +258,8 @@ omitted ranges or content.
 
 `ToolResult(tool: str, ok: bool, data: dict[str, object], truncated: bool =
 False, error_code: str | None = None, message: str | None = None)` is a frozen
-dataclass. Its `__post_init__()` bounds result metadata and payload to 32 KiB;
+dataclass. Its `__post_init__()` bounds result metadata and payload to 32 KiB,
+trimming search matches while preserving the query;
 `to_dict() -> dict[str, object]` returns the JSON-ready form. `_json_size(value:
 object) -> int` measures the ASCII-escaped JSON size so the cap also holds for
 Unicode content.

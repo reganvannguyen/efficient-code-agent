@@ -102,3 +102,18 @@ Result: `1 passed in 28.44s`. The test observed successful reads of both
 `settings.py` and `greeting.py`, a nonempty final answer with `COMPLETED`
 status, and unchanged fixture files. This is one successful smoke run, not
 proof of semantic correctness or repeated reliability.
+
+### Lexical search CLI smoke test — 2026-11-03
+
+With the same local model and server, the CLI was exercised with tool-call
+instrumentation using this task:
+
+```sh
+.venv/bin/python -m harness run "Use search_code to find GREETING_PREFIX in Python files, then read a matching file and explain how the prefix is used." --repo tests/fixtures/read_only_repo
+```
+
+Observed actions: `search_code` returned `greeting.py` lines 1 and 5 and
+`settings.py` line 1; `read_file` then read `greeting.py`; the model returned
+a completion. The run ended `COMPLETED` with `model_complete`, 3 model calls,
+and 3 steps. This is one successful smoke run, not independent answer
+verification or a reliability benchmark.

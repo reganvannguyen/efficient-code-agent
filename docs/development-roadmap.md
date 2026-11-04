@@ -123,7 +123,7 @@ Extend the read-only agent into a coding agent that can find code, make changes,
 
 ### Implementation tasks
 
-- [ ] Add a bounded `search_code` tool using ripgrep (basic lexical search only).
+- [x] Add a bounded `search_code` tool using ripgrep (basic lexical search only).
 - [ ] Add a safe patch-based `edit_file` tool with diff recording.
 - [ ] Add `run_tests` using explicitly permitted commands and subprocess timeouts.
 - [ ] Define an approval policy for risky or destructive operations.
