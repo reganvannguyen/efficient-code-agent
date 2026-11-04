@@ -2,7 +2,7 @@
 
 **A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
 
-> **Status:** Early development. The local model chat command and stateless interactive prompt loop are implemented; autonomous agent capabilities remain planned.
+> **Status:** Early development. The local chat command, stateless interactive loop, and bounded read-only repository agent are implemented. Editing, execution, and independent verification remain future work.
 
 ## Why this project?
 
@@ -183,6 +183,49 @@ python -m harness chat "Say hello in one sentence."
 The `harness chat PROMPT` command prints the response to stdout and token usage
 to stderr when the server reports it. See [Local Model Setup](docs/local-model.md)
 for the tested server configuration and details.
+
+## Read-only repository task CLI
+
+Use `harness run TASK` to let the model inspect a repository through the
+bounded `list_files` and `read_file` tools. The repository defaults to the
+current directory. The agent cannot edit files or run commands. A completed
+status means the model proposed an answer; it is unverified and does not prove
+that the answer is correct.
+
+```bash
+harness run "Explain how greeting.py combines its prefix and name" --repo ./tests/fixtures/read_only_repo
+python -m harness run "Summarize this project" --repo . \
+  --base-url http://127.0.0.1:9931 --model MODEL.gguf --max-tokens 256 \
+  --timeout 120 --run-timeout 300 --max-model-calls 20 --max-steps 20
+```
+
+Install `rg` as described above and start a compatible llama.cpp server before
+running a task. The run request timeout and overall run deadline are in
+seconds. Prompt and model response limits are measured in bytes, not tokens.
+Ctrl+C requests cooperative cancellation at runtime boundaries; it does not
+forcibly interrupt an in-flight model request.
+
+The `run` command requests schema-constrained JSON actions from llama.cpp. Use
+a server build that supports schema-based `response_format`; see the
+[llama.cpp server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1chatcompletions-openai-compatible-chat-completions-api).
+The run request also sends repository action policy in a system message and
+keeps the combined system and user prompt content within the runtime's 24 KiB
+byte budget. The ordinary `chat` command does not send a system message or
+request an action schema.
+
+For path-only questions, the agent can use `list_files` without reading file
+contents. Its `pattern` is a Python `Path.match` glob, not a regular expression:
+`*.py` and `settings.py` are examples. `settings.py|greeting.py` does not mean
+“either filename”; request each name with a separate call. If a filtered list
+is empty, try a simpler pattern or an unfiltered listing before concluding
+that a path is absent.
+
+The final answer is the only content written to stdout. Run status, stop reason,
+model-call and step counts, and the unverified-completion label go to stderr.
+Exit codes are 0 for a model completion, 1 for a runtime failure or reached
+limit, 2 for invalid invocation, and 130 for cancellation. A local live smoke
+check can be run after starting the model server with
+`HARNESS_LIVE_SMOKE=1 .venv/bin/python -m pytest tests/test_cli.py -k live_run_smoke`.
 
 The initial release will focus on a single local machine and repository, not distributed infrastructure or cloud deployment.
 

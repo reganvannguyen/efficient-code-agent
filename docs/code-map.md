@@ -1,10 +1,10 @@
 # Implemented code map
 
 This guide describes the code that exists today. The Python package currently
-supports a one-request chat command, a stateless interactive prompt loop, agent
-run-state and action parsing, bounded read-only repository tools, and a bounded
-read-only agent loop with independent budgets, cooperative cancellation, and
-transport retry. CLI integration remains future work. Interactive prompts
+supports a one-request chat command, a stateless interactive prompt loop, a
+read-only repository task command, agent run-state and action parsing, bounded
+read-only repository tools, and a bounded read-only agent loop with independent
+budgets, cooperative cancellation, and transport retry. Interactive prompts
 are independent requests with no conversation history. This page is maintained
 alongside code changes, not generated or refreshed by an automatic watcher.
 
@@ -20,6 +20,12 @@ flowchart LR
     C -->|no arguments| I[harness.cli.interactive]
     I -->|each nonblank prompt| H[harness.llama_client.chat]
     C -->|chat PROMPT| H
+    C -->|run TASK| A[harness.cli._run]
+    A -->|configured callable| R[harness.agent.runtime.run_agent]
+    R -->|model prompt + timeout| H
+    R -->|terminal AgentRun| A
+    A -->|final answer only| O[stdout]
+    A -->|status, reason, counters, unverified label| D[stderr]
     H -->|HTTP POST JSON, bounded read| S[External llama-server]
     G[External GGUF model] --> S
     S -->|JSON response| H
@@ -33,9 +39,9 @@ flowchart LR
 modules in this repository. In interactive mode Python sends each nonblank
 prompt as its own non-streaming chat request, without carrying conversation
 history between requests. The one-shot `chat PROMPT` command remains available.
-The action parser and repository dispatcher are not connected to the CLI chat
-request flow. Callers can independently use `run_agent()` with a model callable;
-the loop supports only read-only tools and does not edit files.
+The action parser and repository dispatcher are used by the `run` command via
+`run_agent()`. That command supports only read-only tools and does not edit
+files. A model completion is reported as unverified.
 
 ## Agent runtime flow
 
@@ -77,12 +83,12 @@ flowchart LR
 | --- | --- |
 | [`src/harness/__init__.py`](../src/harness/__init__.py) | Package docstring; no runtime behavior. |
 | [`src/harness/__main__.py`](../src/harness/__main__.py) | Calls `harness.cli.main()` so `python -m harness` works. |
-| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses and validates one-shot `chat` options; shares response and usage formatting; handles interactive termination and retryable request errors. |
-| [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, sends it with `urllib`, reads at most 1 MiB plus a sentinel, classifies transport/timeouts and oversized bodies, validates/parses JSON, and normalizes available usage counts. |
+| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses and validates `chat` and read-only `run` options; binds the system prompt and action schema to the run chat callable; prints the final answer only to stdout and run status details to stderr; handles interactive termination and retryable request errors. |
+| [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, optionally prepends a system message and forwards a JSON response schema, sends it with `urllib`, reads at most 1 MiB plus a sentinel, classifies transport/timeouts and oversized bodies, validates/parses JSON, and normalizes available usage counts. |
 | [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, and `run_agent`. |
 | [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses, mutable `AgentRun` state, counters, stop reason, and permitted state transitions. |
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
-| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Validates model timeout compatibility and runtime limits, checks cooperative cancellation and monotonic deadlines at safe boundaries, retries one typed transport failure within the call budget, enforces independent call/step/invalid/prompt/output budgets, and runs the read-only action/tool loop. |
+| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines the CLI's system prompt and two-tool action schema; pins exact `tool` / `complete` action formats and repository inspection instructions in the user prompt; gives invalid responses corrective `read_file` schema feedback; validates model timeout compatibility and runtime limits, checks cooperative cancellation and deadlines, retries one typed transport failure, and runs the read-only loop within independent budgets. |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
 | [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates the supported tool schemas before filesystem access, resolves the workspace, and dispatches `list_files` / `read_file`. |
 | [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks. |
@@ -121,12 +127,32 @@ as a step; an oversized HTTP body stops without a step. Invalid tool/protocol
 actions advance the invalid streak; ordinary tool errors are observations and
 reset it. Only completion sets `final_response`.
 
-Prompt assembly pins the original task and safety/protocol instructions, then
-includes chronological JSON action/observation exchanges. To stay within the
-UTF-8 byte limit, it removes oldest whole exchanges from the in-memory history;
-the newest exchange is retained. If the pinned content or newest exchange does
-not fit, the run stops with `LIMIT_REACHED` and `prompt_budget` before inference.
-The limit measures bytes, not model tokens. `complete` stores its summary as
+`READ_ONLY_ACTION_SCHEMA` in `runtime.py` permits exactly three object forms:
+`list_files` with optional `directory` / `pattern` strings, `read_file` with
+required `path` and optional positive integer line bounds, or `complete` with a
+nonempty `summary`. Tool argument objects and action objects reject extra
+fields. The schema requires strings to have at least one character; the
+dispatcher also rejects whitespace-only paths and patterns and enforces path
+containment. It does not put a maximum on line numbers; the dispatcher enforces
+`end_line >= start_line` and a range of at most 200 lines. The `run` CLI binds
+this schema to its llama client callable; direct `run_agent()` callers still
+only need to provide callables accepting `model(prompt, *, timeout=...)`.
+`READ_ONLY_SYSTEM_PROMPT` is passed as a system message by the CLI run path.
+The CLI subtracts its UTF-8 byte length from `max_prompt_bytes`, keeping the
+system and user message contents together within the 24 KiB default.
+
+Prompt assembly pins the original task and safety/protocol instructions,
+including exact `list_files`, `read_file`, and `complete` examples, the allowed
+`kind` values, and guidance to use listing for path-only questions and read
+requested contents before answering; it then includes chronological JSON
+action/observation exchanges and a next-action directive. To stay within the
+UTF-8 byte limit, it removes oldest whole
+exchanges from history while preserving the next-action directive at the end;
+the directive's bytes count toward the budget. If the pinned content or newest
+exchange does not fit, the run stops with `LIMIT_REACHED` and `prompt_budget`
+before inference. The limit measures bytes, not model tokens. An invalid
+response gets the valid `read_file` request schema, a reminder that the tool
+name belongs in `name`, and a UTF-8-safe excerpt of the rejected response. `complete` stores its summary as
 `final_response` and ends `COMPLETED` with `model_complete`; no verification is
 performed, so this status alone does not establish correctness.
 
@@ -143,8 +169,9 @@ monotonic deadline; `_stop(run: AgentRun, status: RunStatus, reason: str) ->
 None` records the reason and transitions the run; `_exchange(action: object,
 observation: object) -> str` serializes one JSON history entry;
 `_build_prompt(task: str, history: list[str], byte_limit: int) -> str | None`
-assembles the pinned prompt and trims oldest complete entries in place until it
-fits, or returns `None` when the pinned prompt and newest entry cannot fit;
+assembles the pinned prompt and trailing `_NEXT_ACTION` directive, trimming
+oldest complete history entries in place until they fit the byte limit, or
+returns `None` when the pinned prompt, directive, and newest entry cannot fit;
 `_utf8_excerpt(value: str, byte_limit: int) -> str` returns a UTF-8-safe
 excerpt bounded by bytes.
 
@@ -172,14 +199,22 @@ stay within the canonical workspace after symlink resolution. This check does
 not protect against hostile concurrent filesystem changes.
 
 `list_files(root: Path, arguments: dict[str, object]) -> ToolResult` accepts
-optional `directory` (default `.`) and positive nonblank string `pattern`. It calls ripgrep
-without a shell, strips `RIPGREP_CONFIG_PATH`, disables global Git ignores,
-and retains repository ignore handling in Git and non-Git workspaces. The
-pattern filters discovered workspace-relative paths using `Path.match`; it
-cannot override ignore rules. Hidden paths and generated directories
+optional `directory` (default `.`) and nonblank string `pattern`. It calls
+ripgrep without a shell, strips `RIPGREP_CONFIG_PATH`, disables global Git
+ignores, and retains repository ignore handling in Git and non-Git workspaces.
+The pattern filters discovered workspace-relative paths using Python
+`Path.match` glob syntax, not regular expressions: `*.py` matches Python files;
+literal names such as `settings.py` and `greeting.py` can be requested in
+separate calls. `settings.py|greeting.py` is not alternation. An empty filtered
+result does not establish that a path is absent; retry with a simpler pattern
+or omit the pattern. Path-only questions can be answered from a successful
+listing, while content questions require `read_file`. Patterns cannot override
+ignore rules. Hidden paths and generated directories
 (`node_modules`, `.venv`, `__pycache__`, `dist`, `build`) are always filtered.
 Results are sorted and limited by 200 paths, 64 KiB of ripgrep output, and a
-five-second timeout. No matches is a successful empty result. `rg` must be
+five-second timeout. No matches is a successful empty result; filtered empty
+results include a message explaining literal `|` and suggesting simpler or
+unfiltered searches. `rg` must be
 installed separately.
 
 `read_file(root: Path, arguments: dict[str, object]) -> ToolResult` requires
@@ -228,6 +263,8 @@ With an empty argument list it calls `interactive()`. Otherwise accepts:
 
 ```text
 chat PROMPT [--base-url URL] [--model NAME] [--timeout SECONDS] [--max-tokens N]
+run TASK [--repo PATH] [--base-url URL] [--model NAME] [--timeout SECONDS]
+    [--max-tokens N] [--run-timeout SECONDS] [--max-model-calls N] [--max-steps N]
 ```
 
 Defaults: `http://127.0.0.1:9931`,
@@ -236,6 +273,25 @@ prompt, non-finite or non-positive timeout, or non-positive token limit is an
 argparse error (exit 2). A client or input validation error is printed to
 stderr and exits 1. Successful response text goes to stdout; token counts go to
 stderr only when at least one count is available.
+
+`run TASK` defaults to the current directory, the same local server/model,
+256 response tokens, a 120-second request timeout, a 300-second run deadline,
+20 model calls, and 20 steps. `--timeout` is passed to the runtime as its
+request timeout; the runtime also shortens it to the remaining run deadline.
+Invalid tasks, repository paths, and limits are argparse errors (exit 2) before
+inference. On completion the final answer alone is written to stdout. Stderr
+reports status, stop reason, model-call and step counts, and labels completion
+as unverified. Failed or limited runs exit 1; cancellation exits 130. Runtime
+prompt/output budgets are bytes, not tokens. Cancellation is cooperative at
+runtime boundaries and cannot forcibly stop an in-flight request.
+
+Internal helper `_run(args: argparse.Namespace, parser: argparse.ArgumentParser)
+-> None` binds model URL/name/token settings, the read-only system prompt, and
+the action schema with `functools.partial`; it reduces `max_prompt_bytes` by
+the system prompt's UTF-8 length so system plus user message contents remain
+within 24 KiB; then it passes that callable and budgets to `run_agent()` and
+maps the terminal run to output streams and exit code. `_STOP_DETAILS` maps
+known runtime stop reasons to concise human-readable stderr text.
 
 ### `interactive() -> None`
 
@@ -251,12 +307,18 @@ Internal shared formatter in [`cli.py`](../src/harness/cli.py). Prints response
 text to stdout and any available token counts to stderr for both interactive
 and one-shot requests.
 
-### `chat(prompt: str, *, base_url: str = 'http://127.0.0.1:9931', model: str = 'Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf', timeout: float = 120, max_tokens: int = 256) -> ChatResponse`
+### `chat(prompt: str, *, base_url: str = 'http://127.0.0.1:9931', model: str = 'Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf', timeout: float = 120, max_tokens: int = 256, response_schema: dict[str, object] | None = None, system_prompt: str | None = None) -> ChatResponse`
 
 Defined in [`llama_client.py`](../src/harness/llama_client.py). Requires a
-non-blank prompt, finite positive timeout, and positive integer `max_tokens`.
-It POSTs JSON to `{base_url}/v1/chat/completions` with `model`, one user
-`messages` entry, `max_tokens`, and `stream: false`. It expects a string at
+non-blank prompt, finite positive timeout, positive integer `max_tokens`, and a
+dictionary or `None` for `response_schema`, and a nonblank string or `None` for
+`system_prompt`. It POSTs JSON to
+`{base_url}/v1/chat/completions` with `model`, one user `messages` entry,
+`max_tokens`, and `stream: false`. If provided, `response_schema` adds
+`response_format: {"type":"json_object","schema":...}`; otherwise that field
+is omitted. If provided, `system_prompt` is a system-role message before the
+user message; otherwise the original single-user-message payload is preserved.
+It expects a string at
 `choices[0].message.content`; usage counts are optional. It raises
 `ValueError` for invalid inputs and `LlamaClientError` for HTTP/network/timeout
 failures or malformed response JSON/content.
@@ -289,13 +351,18 @@ non-integer values (including booleans) return `None`.
 2. With no arguments, `main()` starts `interactive()`, which reads a prompt and
    calls `chat(prompt)` once. Each cycle carries only the current prompt.
 3. With explicit `chat PROMPT` arguments, `main()` validates options and calls
-   `chat()` once with the requested configuration.
+   `chat()` once with the requested configuration. For `run TASK`, it validates
+   CLI limits, `_run()` configures the model callable, and `run_agent()` owns
+   the read-only action loop; `_run()` prints its result and terminal counters.
 4. `chat()` posts one JSON request, parses the first choice and optional token
    counts, and returns `ChatResponse`; `_print_response()` prints the result.
 
 The CLI tests in [`tests/test_cli.py`](../tests/test_cli.py) cover the module
 entry point, independent interactive requests, blank input, termination,
-retryable errors, option forwarding, output streams, and CLI errors. The client
+retryable errors, option forwarding, output streams, CLI errors, deterministic
+multi-file `run` behavior, budgets and runtime failures. A local live smoke test
+is opt-in with `HARNESS_LIVE_SMOKE=1`; it must pass before recording live-model
+acceptance. The client
 tests in [`tests/test_llama_client.py`](../tests/test_llama_client.py) cover the
 HTTP payload, response/usage parsing, input limits, and
 HTTP/network/timeout/malformed response failures. These mocked tests do not

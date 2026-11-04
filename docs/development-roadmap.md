@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1 local model foundation and the bounded read-only Phase 2 agent loop, state, action protocol, repository tools, runtime budgets, timeouts, and cooperative cancellation are implemented; CLI integration and verification remain planned.
+> **Status:** Phase 1 and the read-only Phase 2 CLI are implemented, with deterministic tests and a successful local multi-file smoke test. Coding and verification remain future work.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -96,22 +96,22 @@ Build the smallest useful multi-step agent: it can inspect a repository and answ
 - [x] Limit model calls and prompt bytes.
 - [x] Add maximum steps, timeouts, and cancellation checks.
 - [x] Support model-declared completion while distinguishing the model's proposal from verification evidence.
-- [ ] Add a basic CLI command such as `harness run "Explain this module" --repo ./repo`.
+- [x] Add a basic CLI command such as `harness run "Explain this module" --repo ./repo`.
 - [x] Use a fake model callable for deterministic loop tests.
 
 ### Tests
 
-- [ ] The agent reads two or more files without an additional user prompt.
-- [ ] Invalid tool names and malformed arguments are rejected.
-- [ ] Paths outside the workspace are rejected, including symlink escapes.
-- [ ] An endlessly requesting fake model stops at its configured limit.
-- [ ] Model timeouts and malformed responses do not crash the CLI.
+- [x] A deterministic runtime test reads two fixture files without an additional user prompt.
+- [x] Invalid tool names and malformed arguments are rejected (`tests/test_agent_runtime.py`).
+- [x] Paths outside the workspace are rejected, including symlink escapes (`tests/test_repository_tools.py`).
+- [x] An endlessly requesting fake model stops at its configured limit (`tests/test_agent_runtime.py`).
+- [x] Model timeouts and malformed responses produce concise CLI failure reports.
 
 ### Deliverable
 
 A **read-only local repository assistant** with a functioning bounded agent loop.
 
-**Done when:** The agent can answer a question about a small fixture repository by autonomously inspecting relevant files.
+**Done when:** The agent can answer a question about a small fixture repository by autonomously inspecting relevant files. Deterministic CLI/runtime integration is covered; a successful live smoke run on 2026-11-03 is recorded in [Local model setup](local-model.md). This is smoke evidence, not a correctness or reliability benchmark.
 
 **Avoid:** Building sophisticated state machines or abstractions before the simple loop is reliable.
 

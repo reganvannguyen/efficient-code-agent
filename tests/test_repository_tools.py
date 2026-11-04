@@ -393,6 +393,19 @@ def test_streaming_list_reaps_child_after_reader_error(tmp_path, monkeypatch):
     assert processes[0].poll() is not None
 
 
+def test_empty_glob_has_recovery_hint_and_literal_pipe_still_matches(tmp_path):
+    (tmp_path / "one|two.py").write_text("example", encoding="utf-8")
+
+    missing = call(tmp_path, "list_files", {"pattern": "one.py|two.py"})
+    assert missing.ok and missing.data["paths"] == []
+    assert "literal, not OR" in missing.message
+    assert "omit pattern" in missing.message
+
+    literal = call(tmp_path, "list_files", {"pattern": "one|two.py"})
+    assert literal.ok and literal.data["paths"] == ["one|two.py"]
+    assert literal.message is None
+
+
 def shutil_which_rg():
     from shutil import which
 

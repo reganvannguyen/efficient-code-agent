@@ -71,6 +71,58 @@ def test_chat_posts_expected_payload_and_parses_response(monkeypatch) -> None:
     }
 
 
+def test_chat_forwards_optional_system_prompt_and_response_schema(monkeypatch) -> None:
+    schema = {
+        "type": "object",
+        "required": ["kind"],
+        "additionalProperties": False,
+    }
+    seen = {}
+
+    def fake_urlopen(request, timeout):
+        seen["payload"] = json.loads(request.data)
+        return FakeHTTPResponse(b'{"choices":[{"message":{"content":"{}"}}]}')
+
+    monkeypatch.setattr(llama_client, "urlopen", fake_urlopen)
+
+    assert llama_client.chat(
+        "Return JSON",
+        response_schema=schema,
+        system_prompt="System instruction",
+    ) == ChatResponse("{}")
+    assert seen["payload"]["messages"] == [
+        {"role": "system", "content": "System instruction"},
+        {"role": "user", "content": "Return JSON"},
+    ]
+    assert seen["payload"]["response_format"] == {
+        "type": "json_object",
+        "schema": schema,
+    }
+
+
+def test_chat_rejects_invalid_response_schema_before_request(monkeypatch) -> None:
+    calls = []
+    monkeypatch.setattr(llama_client, "urlopen", lambda *_a, **_k: calls.append(1))
+
+    with pytest.raises(ValueError, match="response_schema"):
+        llama_client.chat("Return JSON", response_schema=["not", "an", "object"])
+
+    assert calls == []
+
+
+@pytest.mark.parametrize("system_prompt", ["", "  ", 3])
+def test_chat_rejects_invalid_system_prompt_before_request(
+    monkeypatch, system_prompt
+) -> None:
+    calls = []
+    monkeypatch.setattr(llama_client, "urlopen", lambda *_a, **_k: calls.append(1))
+
+    with pytest.raises(ValueError, match="system_prompt"):
+        llama_client.chat("hello", system_prompt=system_prompt)
+
+    assert calls == []
+
+
 def test_chat_reads_at_most_one_mib_plus_sentinel(monkeypatch) -> None:
     response = FakeHTTPResponse(b"x" * (llama_client.MAX_RESPONSE_BODY_BYTES + 1))
     monkeypatch.setattr(llama_client, "urlopen", lambda *_a, **_k: response)

@@ -83,3 +83,22 @@ total tokens. This records one successful smoke test, not repeated reliability
 or benchmark evidence.
 
 After the earlier curl request, `ps` reported the server at 3,667,024 KiB RSS (about 3.5 GiB) at roughly 13 minutes of uptime. This is a point-in-time process RSS value, not peak or total system memory usage. No startup failure was observed.
+
+### Read-only CLI smoke test — 2026-11-03
+
+The initial live CLI test exposed malformed actions (Markdown fences and
+`kind: "read_file"`) and premature completion without file reads. The run
+command now sends a system policy and a llama.cpp JSON response schema; strict
+parser validation remains enabled. Ordinary chat requests keep their previous
+format.
+
+With the documented Qwen model running on port 9931, this test passed:
+
+```sh
+HARNESS_LIVE_SMOKE=1 .venv/bin/python -m pytest tests/test_cli.py::test_live_run_smoke_reads_both_fixture_files -q
+```
+
+Result: `1 passed in 28.44s`. The test observed successful reads of both
+`settings.py` and `greeting.py`, a nonempty final answer with `COMPLETED`
+status, and unchanged fixture files. This is one successful smoke run, not
+proof of semantic correctness or repeated reliability.
