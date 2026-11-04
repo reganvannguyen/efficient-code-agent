@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -23,6 +24,7 @@ def test_read_file_default_range_and_metadata(tmp_path):
     assert result.data == {
         "path": "sample.txt",
         "size": 11,
+        "sha256": hashlib.sha256(b"alpha\nbeta\n").hexdigest(),
         "total_lines": 2,
         "start_line": 1,
         "end_line": 2,
@@ -41,6 +43,7 @@ def test_read_file_line_range_and_empty_beyond_end(tmp_path):
 
     assert selected.data["content"] == "2: b"
     assert selected.truncated
+    assert selected.data["sha256"] == hashlib.sha256(b"a\nb\nc").hexdigest()
     assert beyond.ok and beyond.truncated
     assert beyond.data["start_line"] is None
     assert beyond.data["end_line"] is None

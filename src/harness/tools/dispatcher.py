@@ -85,21 +85,32 @@ def _json_size(value: object) -> int:
     return len(json.dumps(value, ensure_ascii=True).encode("utf-8"))
 
 
-def execute_tool(action: ToolAction, workspace: Path) -> ToolResult:
-    """Validate and run one supported read-only tool request."""
+def execute_tool(
+    action: ToolAction, workspace: Path, *, allow_edits: bool = False
+) -> ToolResult:
+    """Validate and run one repository tool request; edits require authorization."""
+    if not isinstance(allow_edits, bool):
+        return _error("", "invalid_arguments", "allow_edits must be a boolean")
     if not isinstance(action, ToolAction):
         return _error("", "invalid_arguments", "expected a ToolAction")
     if not isinstance(action.name, str) or not action.name.strip():
         return _error("", "invalid_arguments", "tool name must be a non-blank string")
-    if action.name not in {"list_files", "read_file", "search_code"}:
+    if action.name not in {"list_files", "read_file", "search_code", "edit_file"}:
         return _error(action.name, "unknown_tool", "unsupported tool")
     if not isinstance(action.arguments, dict):
         return _error(action.name, "invalid_arguments", "arguments must be an object")
     try:
         _validate_schema(action.name, action.arguments)
+        if action.name == "edit_file" and not allow_edits:
+            raise ToolFailure("permission_denied", "file edits are not authorized")
         root = _workspace(workspace)
         from harness.tools.repository import list_files, read_file
         from harness.tools.search import search_code
+
+        if action.name == "edit_file":
+            from harness.tools.editing import edit_file
+
+            return edit_file(root, action.arguments)
 
         if action.name == "list_files":
             return list_files(root, action.arguments)
@@ -141,8 +152,16 @@ def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
         else {"query", "glob", "max_results"}
         if tool == "search_code"
         else {"path", "start_line", "end_line"}
+        if tool == "read_file"
+        else {"path", "expected_sha256", "old_text", "new_text"}
     )
-    required = {"path"} if tool == "read_file" else set()
+    required = (
+        {"path", "expected_sha256", "old_text", "new_text"}
+        if tool == "edit_file"
+        else {"path"}
+        if tool == "read_file"
+        else set()
+    )
     if arguments.keys() - allowed or required - arguments.keys():
         raise ToolFailure("invalid_arguments", "arguments do not match the tool schema")
     if tool == "list_files":
@@ -213,6 +232,11 @@ def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
     if not isinstance(path, str) or not path.strip():
         raise ToolFailure("invalid_arguments", "path must be a non-blank string")
     _validate_relative(path)
+    if tool == "edit_file":
+        from harness.tools.editing import validate_edit_arguments
+
+        validate_edit_arguments(arguments)
+        return
     start = _line_number(arguments.get("start_line", 1), "start_line")
     end = _line_number(arguments.get("end_line", start + 199), "end_line")
     if end < start or end - start + 1 > 200:

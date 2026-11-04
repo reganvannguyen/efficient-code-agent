@@ -3,8 +3,9 @@
 This guide describes the code that exists today. The Python package currently
 supports a one-request chat command, a stateless interactive prompt loop, a
 read-only repository task command, agent run-state and action parsing, bounded
-read-only repository tools, and a bounded read-only agent loop with independent
-budgets, cooperative cancellation, and transport retry. Interactive prompts
+read-only repository tools, an explicitly authorized low-level file edit API,
+and a bounded read-only agent loop with independent budgets, cooperative
+cancellation, and transport retry. Interactive prompts
 are independent requests with no conversation history. This page is maintained
 alongside code changes, not generated or refreshed by an automatic watcher.
 
@@ -41,7 +42,9 @@ prompt as its own non-streaming chat request, without carrying conversation
 history between requests. The one-shot `chat PROMPT` command remains available.
 The action parser and repository dispatcher are used by the `run` command via
 `run_agent()`. That command supports only read-only tools and does not edit
-files. A model completion is reported as unverified.
+files. Direct Python callers may pass `allow_edits=True` to the dispatcher; no
+CLI or runtime path exposes that flag. A model completion is reported as
+unverified.
 
 ## Agent runtime flow
 
@@ -62,7 +65,7 @@ flowchart LR
     R -->|cancellation / KeyboardInterrupt| C[CANCELLED]
 ```
 
-## Read-only tool flow
+## Tool API flow
 
 ```mermaid
 flowchart LR
@@ -73,9 +76,11 @@ flowchart LR
     E -->|list_files| F[harness.tools.repository.list_files]
     E -->|search_code| S[harness.tools.search.search_code]
     E -->|read_file| G[harness.tools.repository.read_file]
+    E -->|edit_file + allow_edits| W[harness.tools.editing.edit_file]
     F --> H[ToolResult]
     S --> H
     G --> H
+    W --> H
     H --> I[to_dict: bounded JSON]
 ```
 
@@ -92,8 +97,9 @@ flowchart LR
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
 | [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines the CLI's system prompt and three-tool action schema; pins exact `tool` / `complete` action formats and repository inspection instructions in the user prompt; gives invalid responses corrective `read_file` schema feedback; validates model timeout compatibility and runtime limits, checks cooperative cancellation and deadlines, retries one typed transport failure, and runs the read-only loop within independent budgets. |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
-| [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates the supported tool schemas before filesystem access, resolves the workspace, and dispatches `list_files` / `search_code` / `read_file`. |
-| [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks. |
+| [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates supported tool schemas before filesystem access, validates the keyword-only `allow_edits` authorization flag, resolves the workspace, and dispatches read-only tools or authorized `edit_file`. |
+| [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks; successful reads include the SHA-256 of complete file bytes for edit preconditions. |
+| [`src/harness/tools/editing.py`](../src/harness/tools/editing.py) | Validates exact-text edit arguments, protected paths and file safety; checks the supplied content hash and unique match; prepares a bounded unified diff and same-directory fsynced temporary file; rechecks identity/content before atomic replacement; reconciles replacement exceptions into `unchanged`, `applied`, or `unknown` audit results. |
 | [`src/harness/tools/search.py`](../src/harness/tools/search.py) | Validates regular expressions with ripgrep, runs bounded JSON lexical search under one deadline, filters workspace-relative matches and filename globs, deduplicates path/line hits, and returns sorted bounded previews. |
 
 ## Agent runtime contracts
@@ -193,14 +199,17 @@ dict[str, object]` hook rejects duplicate keys at every object depth, and
 constants. The CLI does not use these APIs; `run_agent()` calls
 `parse_action()` for every model response.
 
-### Read-only repository tool APIs
+### Repository tool APIs
 
-`execute_tool(action: ToolAction, workspace: Path) -> ToolResult` supports
-`list_files`, `search_code`, and `read_file`. It checks the exact argument schema and types
-before resolving the existing workspace directory. Unknown tools and invalid
-requests return a structured failure. Workspace paths must be relative and
-stay within the canonical workspace after symlink resolution. This check does
-not protect against hostile concurrent filesystem changes.
+`execute_tool(action: ToolAction, workspace: Path, *, allow_edits: bool =
+False) -> ToolResult` supports `list_files`, `search_code`, and `read_file` by
+default. It recognizes `edit_file` only when a direct caller explicitly passes
+`allow_edits=True`; the CLI and agent runtime do not expose this flag. It checks
+the exact argument schema and types before resolving the existing workspace
+directory. Unknown tools and invalid requests return a structured failure.
+Workspace paths must be relative and stay within the canonical workspace after
+symlink resolution. This check does not protect against hostile concurrent
+filesystem changes.
 
 `list_files(root: Path, arguments: dict[str, object]) -> ToolResult` accepts
 optional `directory` (default `.`) and nonblank string `pattern`. It calls
@@ -252,9 +261,50 @@ Search helpers in `harness.tools.search`:
 `path` and accepts optional positive integer `start_line` and `end_line` values
 (inclusive). It reads at most 1 MiB plus one sentinel byte, rejects non-regular
 files, NUL bytes, and invalid UTF-8, and returns at most 200 numbered lines and
-16 KiB of content. Results include relative path, byte size, total lines, and
-actual returned line bounds; empty results use null bounds. `truncated` reports
-omitted ranges or content.
+16 KiB of content. Results include relative path, byte size, SHA-256 of the
+complete original bytes, total lines, and actual returned line bounds; empty
+results use null bounds. `truncated` reports omitted ranges or content.
+
+`edit_file(root: Path, arguments: dict[str, object]) -> ToolResult` requires
+exactly `path`, `expected_sha256` (64 hex characters), `old_text`, and
+`new_text`. It edits an existing UTF-8 regular file up to 1 MiB after matching
+the current content hash and exactly one occurrence of `old_text`; empty old
+text is valid only for an empty file. It rejects binary/invalid UTF-8 files,
+protected path components, symlinks, hard links, and nonwritable files or
+parents. It preserves file mode and all bytes outside the match, stages and
+fsyncs a temporary file beside the target, then rechecks target identity and
+content before `os.replace`. A no-op returns `write_state="unchanged"` without
+writing. Results contain the target path, confirmed changed paths, write state
+(`unchanged`, `applied`, or `unknown`), and a unified diff with three context
+lines and no-final-newline markers; the diff is capped at 16 KiB and the
+ASCII-escaped JSON result at 32 KiB. Replacement exceptions are reconciled
+against actual target bytes. Concurrent mutation after the final check and
+process termination during replacement cannot be rolled back or reported.
+This direct dispatcher API does not enable model-requested edits.
+
+Helpers in `harness.tools.editing`:
+
+- `validate_edit_arguments(arguments: dict[str, object]) -> None` checks hash,
+  UTF-8 paths/text, fragment sizes, and protected components before workspace
+  access. `_reject_links(root: Path, target: Path) -> None` walks components to
+  reject symlinks, including the final precommit check.
+- `_same_identity(before: os.stat_result, after: os.stat_result) -> bool`
+  compares device, inode, mode, and link count. `_create_temp(target: Path,
+  contents: bytes, mode: int) -> Path` creates a uniquely named sibling with a
+  fixed-length prefix, preserves mode, flushes/fsyncs, and cleans up failures.
+- `_read_target_bounded(target: Path) -> bytes` rechecks symlink components and
+  regular-file size before reading at most the file limit plus one byte.
+  `_reconcile(relative: str, original: bytes, replacement: bytes, target: Path,
+  error: BaseException, *, mutation_attempted: bool) -> ToolResult` distinguishes
+  unchanged, confirmed replacement, and unknown post-error states.
+- `_unified_diff(path: str, before: str, after: str) -> str` builds three-line
+  context and missing-final-newline markers. `_audit_data(relative: str,
+  state: str, diff: str, confirmed: bool) -> tuple[dict[str, object], bool]`
+  reserves error-envelope space and bounds the diff without discarding audit
+  metadata. `_edit_result(relative: str, state: str, diff: str, confirmed:
+  bool) -> ToolResult` and `_error_result(relative: str, error: BaseException,
+  state: str | None = None, diff: str = "", confirmed: bool = False) ->
+  ToolResult` construct the corresponding bounded results.
 
 `ToolResult(tool: str, ok: bool, data: dict[str, object], truncated: bool =
 False, error_code: str | None = None, message: str | None = None)` is a frozen

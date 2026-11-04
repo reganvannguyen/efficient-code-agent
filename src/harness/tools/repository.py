@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import selectors
 import shutil
@@ -116,6 +117,7 @@ def read_file(root: Path, arguments: dict[str, object]) -> ToolResult:
         {
             "path": relative,
             "size": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
             "total_lines": total_lines,
             "start_line": actual_start,
             "end_line": actual_end,

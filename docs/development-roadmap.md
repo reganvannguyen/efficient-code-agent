@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1 and the read-only Phase 2 CLI are implemented, with deterministic tests and a successful local multi-file smoke test. Coding and verification remain future work.
+> **Status:** Phase 1 and the read-only Phase 2 CLI are implemented, with deterministic tests and a successful local multi-file smoke test. The authorized low-level `edit_file` primitive is implemented; autonomous editing and verification remain future work.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -124,7 +124,7 @@ Extend the read-only agent into a coding agent that can find code, make changes,
 ### Implementation tasks
 
 - [x] Add a bounded `search_code` tool using ripgrep (basic lexical search only).
-- [ ] Add a safe patch-based `edit_file` tool with diff recording.
+- [x] Add an authorized exact-text `edit_file` tool with hash preconditions, bounded diff recording, and atomic single-file replacement.
 - [ ] Add `run_tests` using explicitly permitted commands and subprocess timeouts.
 - [ ] Define an approval policy for risky or destructive operations.
 - [ ] Return structured tool results, including failed tests and patch conflicts.
