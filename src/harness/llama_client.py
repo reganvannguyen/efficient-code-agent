@@ -44,8 +44,10 @@ def chat(
     model: str = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
     timeout: float = 120,
     max_tokens: int = 256,
+    response_schema: dict[str, object] | None = None,
+    system_prompt: str | None = None,
 ) -> ChatResponse:
-    """Send one non-streaming user message to a llama.cpp chat server."""
+    """Send a chat request, optionally constrained by a JSON response schema."""
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("prompt must not be blank")
     if (
@@ -60,15 +62,29 @@ def chat(
         or max_tokens <= 0
     ):
         raise ValueError("max_tokens must be positive")
+    if response_schema is not None and not isinstance(response_schema, dict):
+        raise ValueError("response_schema must be a dictionary or None")
+    if system_prompt is not None and (
+        not isinstance(system_prompt, str) or not system_prompt.strip()
+    ):
+        raise ValueError("system_prompt must be a non-blank string or None")
 
-    payload = json.dumps(
-        {
-            "model": model,
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": max_tokens,
-            "stream": False,
+    messages = []
+    if system_prompt is not None:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.append({"role": "user", "content": prompt})
+    request_payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    if response_schema is not None:
+        request_payload["response_format"] = {
+            "type": "json_object",
+            "schema": response_schema,
         }
-    ).encode("utf-8")
+    payload = json.dumps(request_payload).encode("utf-8")
     request = Request(
         f"{base_url.rstrip('/')}/v1/chat/completions",
         data=payload,

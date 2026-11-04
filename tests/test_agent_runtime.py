@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from harness.agent import RunStatus, ToolAction, run_agent, runtime
-from harness.agent.runtime import _build_prompt
+from harness.agent.runtime import _NEXT_ACTION, READ_ONLY_ACTION_SCHEMA, _build_prompt
 from harness.llama_client import (
     ChatResponse,
     LlamaClientError,
@@ -15,6 +15,57 @@ from harness.llama_client import (
     LlamaTransportError,
 )
 from harness.tools import ToolResult, execute_tool
+
+
+def test_read_only_action_schema_has_exact_tool_and_completion_variants() -> None:
+    list_files, read_file, completion = READ_ONLY_ACTION_SCHEMA["oneOf"]
+
+    assert READ_ONLY_ACTION_SCHEMA["type"] == "object"
+    for tool in (list_files, read_file):
+        assert tool["required"] == ["kind", "name", "arguments"]
+        assert tool["properties"]["kind"]["const"] == "tool"
+        assert set(tool["properties"]) == {"kind", "name", "arguments"}
+        assert tool["additionalProperties"] is False
+    assert list_files["properties"]["name"]["const"] == "list_files"
+    list_arguments = list_files["properties"]["arguments"]
+    assert list_arguments["type"] == "object"
+    assert set(list_arguments["properties"]) == {"directory", "pattern"}
+    assert "required" not in list_arguments
+    assert list_arguments["properties"]["directory"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+    assert list_arguments["properties"]["pattern"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+    assert list_arguments["additionalProperties"] is False
+    assert read_file["properties"]["name"]["const"] == "read_file"
+    read_arguments = read_file["properties"]["arguments"]
+    assert read_arguments["type"] == "object"
+    assert set(read_arguments["properties"]) == {
+        "path",
+        "start_line",
+        "end_line",
+    }
+    assert read_arguments["required"] == ["path"]
+    assert read_arguments["properties"]["path"] == {
+        "type": "string",
+        "minLength": 1,
+    }
+    for line_field in ("start_line", "end_line"):
+        assert read_arguments["properties"][line_field] == {
+            "type": "integer",
+            "minimum": 1,
+        }
+        assert "maximum" not in read_arguments["properties"][line_field]
+    assert read_arguments["additionalProperties"] is False
+    assert completion["required"] == ["kind", "summary"]
+    assert set(completion["properties"]) == {"kind", "summary"}
+    assert completion["properties"]["kind"]["const"] == "complete"
+    assert completion["properties"]["summary"]["type"] == "string"
+    assert completion["properties"]["summary"]["minLength"] == 1
+    assert completion["additionalProperties"] is False
 
 
 def test_run_reads_multiple_files_and_completes(tmp_path: Path) -> None:
@@ -56,6 +107,87 @@ def test_run_reads_multiple_files_and_completes(tmp_path: Path) -> None:
         if path.is_file()
     }
     assert after == before
+
+
+def test_list_files_recovers_from_regex_like_pattern_with_separate_globs(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "settings.py").write_text('PREFIX = "Hello"\n', encoding="utf-8")
+    (tmp_path / "greeting.py").write_text(
+        "from settings import PREFIX\n", encoding="utf-8"
+    )
+    outputs = iter(
+        [
+            '{"kind":"tool","name":"list_files","arguments":{"pattern":"settings.py|greeting.py"}}',
+            '{"kind":"tool","name":"list_files","arguments":{"pattern":"settings.py"}}',
+            '{"kind":"tool","name":"list_files","arguments":{"pattern":"greeting.py"}}',
+            '{"kind":"complete","summary":"Found settings.py and greeting.py."}',
+        ]
+    )
+    prompts: list[str] = []
+
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
+        prompts.append(prompt)
+        return ChatResponse(next(outputs))
+
+    run = run_agent("List the greeting and settings file paths", tmp_path, model=model)
+
+    assert run.status is RunStatus.COMPLETED
+    assert run.model_calls == run.steps == 4
+    assert run.final_response == "Found settings.py and greeting.py."
+    assert "Use list_files for path-only questions" in prompts[0]
+    assert "Python `Path.match` glob syntax, not regular expressions" in prompts[0]
+    assert "An empty filtered result does not prove a path is absent" in prompts[0]
+    assert '"paths":[]' in prompts[1]
+    assert '"pattern":"settings.py"' in prompts[2]
+    assert '"pattern":"greeting.py"' in prompts[3]
+    assert '"paths":["settings.py"]' in prompts[3]
+    assert '"paths":["greeting.py"]' in prompts[3]
+
+
+def test_invalid_action_feedback_guides_a_real_file_read(tmp_path: Path) -> None:
+    (tmp_path / "settings.py").write_text('ANSWER = "verified"\n', encoding="utf-8")
+    outputs = iter(
+        [
+            '```json\n{"kind":"read_file","arguments":{"path":"settings.py"}}\n```',
+            '{"kind":"read_file","arguments":{"path":"settings.py"}}',
+            '{"kind":"tool","name":"read_file","arguments":{"path":"settings.py"}}',
+            '{"kind":"complete","summary":"settings.py defines ANSWER as verified."}',
+        ]
+    )
+    prompts: list[str] = []
+
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
+        prompts.append(prompt)
+        return ChatResponse(next(outputs))
+
+    run = run_agent("Explain ANSWER in settings.py", tmp_path, model=model)
+
+    assert run.status is RunStatus.COMPLETED
+    assert run.final_response == "settings.py defines ANSWER as verified."
+    assert run.model_calls == run.steps == 4
+    assert "Only `kind` values `tool` and `complete` are supported." in prompts[0]
+    assert (
+        '{"kind":"tool","name":"read_file","arguments":{"path":"relative/path"}}'
+        in prompts[0]
+    )
+    assert "no prose or Markdown fences" in prompts[0]
+    history_label = "Action and observation history (JSON exchanges, oldest first):\n"
+
+    def last_exchange(prompt: str) -> dict[str, object]:
+        history = prompt.split(history_label, 1)[1].split("\n\nNext action:", 1)[0]
+        return json.loads(history.splitlines()[-1])
+
+    first_feedback = last_exchange(prompts[1])
+    second_feedback = last_exchange(prompts[2])
+    for exchange in (first_feedback, second_feedback):
+        error = exchange["observation"]["error"]
+        assert 'use {"kind":"tool","name":"read_file",' in error
+        assert '"arguments":{"path":"relative/path"}}' in error
+        assert "Put the tool name in 'name', not 'kind'" in error
+    assert "```json" in first_feedback["observation"]["excerpt"]
+    assert '"kind":"read_file"' in second_feedback["observation"]["excerpt"]
+    assert "ANSWER" in prompts[3] and "verified" in prompts[3]
 
 
 def test_independent_runs_do_not_share_history_counters_or_answers(
@@ -195,6 +327,7 @@ def test_prompt_budget_keeps_task_and_newest_whole_exchange() -> None:
     assert "Original task (immutable):\nRead this task" in prompt
     assert '"i":0' not in prompt
     assert prompt.index('"i":1') < prompt.index('"i":2')
+    assert prompt.endswith(_NEXT_ACTION)
     assert len(prompt.encode("utf-8")) <= byte_limit
     assert history == [
         '{"action":{"i":1},"observation":{"text":"middle"}}',
@@ -203,6 +336,9 @@ def test_prompt_budget_keeps_task_and_newest_whole_exchange() -> None:
 
 
 def test_oversized_prompt_stops_without_inference(tmp_path: Path) -> None:
+    baseline = _build_prompt("Answer", [], 100_000)
+    assert baseline is not None
+    byte_limit = len(baseline.encode("utf-8")) + 100
     calls = 0
 
     def model(_: str, *, timeout: float) -> ChatResponse:
@@ -212,7 +348,7 @@ def test_oversized_prompt_stops_without_inference(tmp_path: Path) -> None:
             '{"kind":"tool","name":"read_file","arguments":{"path":"one"}}'
         )
 
-    run = run_agent("Answer", tmp_path, model=model, max_prompt_bytes=1400)
+    run = run_agent("Answer", tmp_path, model=model, max_prompt_bytes=byte_limit)
 
     assert calls == 1
     assert run.status is RunStatus.LIMIT_REACHED
@@ -270,6 +406,7 @@ def test_prompt_budget_counts_utf8_bytes() -> None:
     assert full_prompt is not None
     byte_count = len(full_prompt.encode("utf-8"))
 
+    assert full_prompt.endswith(_NEXT_ACTION)
     assert _build_prompt(task, [], byte_count) == full_prompt
     assert _build_prompt(task, [], byte_count - 1) is None
 
@@ -313,7 +450,8 @@ def test_invalid_response_excerpt_is_utf8_safe_and_at_most_1kib(
 
     run = run_agent("Recover from invalid output", tmp_path, model=model)
     history_label = "Action and observation history (JSON exchanges, oldest first):\n"
-    exchange = prompts[1].split(history_label, 1)[1]
+    history = prompts[1].split(history_label, 1)[1].split("\n\nNext action:", 1)[0]
+    exchange = history.splitlines()[0]
     excerpt = json.loads(exchange)["observation"]["excerpt"]
 
     assert run.status is RunStatus.COMPLETED

@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** Phase 2 run-state, action parsing, bounded read-only `list_files` / `read_file` tools, independent runtime budgets, request/run timeouts, retry, and cooperative cancellation are implemented. CLI integration and runtime verification remain future work.
+> **Status:** Phase 2 run-state, action parsing, bounded read-only `list_files` / `read_file` tools, independent runtime budgets, request/run timeouts, retry, cooperative cancellation, and CLI integration are implemented. Live-model acceptance and runtime verification remain future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -37,9 +37,7 @@ flowchart TD
     J --> K
     G -->|Working-context edit| L[Validate and persist edit]
     L --> K
-    G -->|Completion proposal| M[Apply verification policy]
-    M -->|Verified| N[COMPLETED]
-    M -->|Unverified / incomplete| K
+    G -->|Completion proposal| N[COMPLETED: unverified]
     G -->|Malformed / inference failure| O[Retry or fail per policy]
     O --> K
     K --> D
@@ -47,7 +45,7 @@ flowchart TD
     Z --> P
 ```
 
-**Illustrative CLI** (not yet implemented):
+**Implemented CLI:**
 
 ```bash
 harness run "Fix the failing authentication test" --repo ./example-repo
@@ -80,7 +78,7 @@ stateDiagram-v2
 | `PENDING` | Task created; execution has not begun |
 | `RUNNING` | Runtime may call the model or execute an allowed action |
 | `WAITING_APPROVAL` | A proposed action requires explicit human authorization |
-| `COMPLETED` | Completion criteria satisfied under the configured verification policy |
+| `COMPLETED` | The model proposed an answer; no independent verification is performed |
 | `FAILED` | Unrecoverable failure or no viable next action |
 | `LIMIT_REACHED` | An execution budget was exhausted |
 | `CANCELLED` | User stopped the run |
@@ -126,7 +124,7 @@ The implemented `parse_action(text: str) -> Action` accepts exactly one JSON obj
 
 ## 4. Agent loop contract
 
-`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable and independent budgets for model attempts, processed steps, consecutive invalid actions, request duration, total run duration, prompt bytes, and model response bytes. It assembles a pinned task/policy prompt, removes oldest complete action/observation exchanges to fit the UTF-8 byte budget, parses one response, dispatches read-only tools, and returns the terminal `AgentRun`. Invalid responses are observed with generic feedback and a UTF-8-safe excerpt capped at 1 KiB. A typed transport or timeout error gets one immediate retry using the same prompt; malformed server responses are not retried. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit.
+`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable and independent budgets for model attempts, processed steps, consecutive invalid actions, request duration, total run duration, prompt bytes, and model response bytes. Its pinned prompt describes separate `list_files`, `read_file`, and `complete` JSON schemas, prohibits Markdown fences, and directs the model to use listing for path-only questions and file reads when contents are requested. It explains that `pattern` uses `Path.match` glob syntax rather than regular expressions and that an empty filtered listing should be retried with a simpler or unfiltered request. The prompt's next-action directive is included in the byte budget after the retained history. Invalid responses are observed with corrective feedback that repeats the exact `read_file` schema and clarifies that the tool name belongs in `name`; the original response excerpt remains capped at 1 KiB. The `run` CLI sends the separate `READ_ONLY_SYSTEM_PROMPT` system message and binds a JSON Schema for both tool requests and completion to the llama.cpp client's `response_format`. It subtracts the system message's UTF-8 byte length from the user-prompt budget, keeping both message contents within the default 24 KiB cap. `run_agent()`'s injected model contract remains `model(prompt, *, timeout=seconds)`; custom callables still receive no schema or system-message argument. Generation constraints do not replace strict parsing, dispatcher validation, or independent verification. A typed transport or timeout error gets one immediate retry using the same prompt; malformed server responses are not retried. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit. Schema-constrained JSON requires a compatible llama.cpp server build; see the [server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1chatcompletions-openai-compatible-chat-completions-api).
 
 ```python
 run_agent(
@@ -227,7 +225,13 @@ at 32 KiB. Unsupported names and malformed requests return controlled errors.
   It invokes `rg --files --null` with a fixed argument list, honors repository
   ignore rules (including non-Git `.ignore` / `.gitignore` fixtures), and
   disables user ripgrep config and global Git excludes. The pattern is applied
-  to discovered workspace-relative paths with Python `Path.match`; it cannot
+  to discovered workspace-relative paths with Python `Path.match`, not as a
+  regular expression; for example, `*.py` matches Python files and a literal
+  `settings.py` pattern matches that name. A pipe does not express alternation:
+  search for `settings.py` and `greeting.py` in separate calls. An empty
+  filtered result is not proof that a path is absent; retry with a simpler
+  pattern or no pattern. A listing is sufficient evidence for path-only
+  questions; use `read_file` when file contents are requested. Patterns cannot
   reveal ignored paths. Hidden paths and `node_modules`, `.venv`,
   `__pycache__`, `dist`, and `build` are excluded even when a pattern matches.
   Results are sorted and limited to 200 paths, 64 KiB of ripgrep output, and
@@ -239,7 +243,9 @@ at 32 KiB. Unsupported names and malformed requests return controlled errors.
   16 KiB. Metadata includes the relative path, byte size, total line count,
   and actual returned line bounds; an empty range has null bounds. `truncated`
   is true when a nonempty file is only partly returned, including a range past
-  EOF.
+  EOF. The action schema allows positive integer line values without an
+  artificial maximum; dispatcher validation requires `end_line >= start_line`
+  and a requested range of at most 200 lines.
 
 Both tools resolve the workspace and target canonically, reject absolute paths,
 `..` components, and symlink escapes, and permit symlinks that resolve inside

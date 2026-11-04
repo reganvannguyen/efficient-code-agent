@@ -56,11 +56,19 @@ def list_files(root: Path, arguments: dict[str, object]) -> ToolResult:
     paths = sorted(set(paths))
     truncated = capped or len(paths) > MAX_LIST_PATHS
     paths = paths[:MAX_LIST_PATHS]
+    message = None
+    if not paths and pattern is not None:
+        message = (
+            "No visible files matched this Path.match glob. The '|' character is "
+            "literal, not OR. Try separate filename patterns, a simpler glob, or "
+            "omit pattern. An empty filtered result does not prove file absence."
+        )
     return ToolResult(
         "list_files",
         True,
         {"directory": directory, "paths": paths},
         truncated=truncated,
+        message=message,
     )
 
 
