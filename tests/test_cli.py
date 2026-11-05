@@ -381,6 +381,147 @@ def test_run_real_runtime_reads_fixture_files_and_preserves_them(
     assert {p.name: p.read_bytes() for p in repo.iterdir() if p.is_file()} == before
 
 
+def test_coding_only_options_are_rejected_without_coding(monkeypatch, tmp_path):
+    from harness import cli
+
+    monkeypatch.setattr(
+        cli,
+        "chat",
+        lambda *_args, **_kwargs: pytest.fail("inference must not start"),
+    )
+    with pytest.raises(SystemExit) as exit_error:
+        cli.main(["run", "task", "--repo", str(tmp_path), "--test-timeout", "60"])
+    assert exit_error.value.code == 2
+
+
+def test_coding_auto_approval_uses_coding_schema(monkeypatch, tmp_path, capsys):
+    from harness import cli
+
+    seen = {}
+
+    def fake_chat(prompt, **kwargs):
+        seen.update(kwargs)
+        return ChatResponse('{"kind":"complete","summary":"done"}')
+
+    monkeypatch.setattr(cli, "chat", fake_chat)
+    cli.main(["run", "task", "--repo", str(tmp_path), "--coding", "--auto-approve"])
+    assert seen["response_schema"] is not None
+    names = [
+        variant["properties"]["name"].get("const")
+        for variant in seen["response_schema"]["oneOf"]
+        if "name" in variant["properties"]
+    ]
+    assert "edit_file" in names
+    assert "run_tests" in names
+    assert "done" in capsys.readouterr().out
+
+
+def test_cli_coding_read_approve_edit_test_complete(monkeypatch, tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "source.txt").write_text("old\n")
+    (repo / "test_sample.py").write_text("def test_pass():\n    assert True\n")
+    import re
+
+    requests = []
+    monkeypatch.setattr(
+        cli, "_approve_in_terminal", lambda request: requests.append(request) or True
+    )
+    calls = 0
+
+    def fake_chat(prompt, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return action("tool", name="read_file", arguments={"path": "source.txt"})
+        if calls == 2:
+            match = re.search(r'"sha256":"([0-9a-f]{64})"', prompt)
+            assert match is not None
+            return action(
+                "tool",
+                name="edit_file",
+                arguments={
+                    "path": "source.txt",
+                    "expected_sha256": match.group(1),
+                    "old_text": "old",
+                    "new_text": "new",
+                },
+            )
+        if calls == 3:
+            return action(
+                "tool",
+                name="run_tests",
+                arguments={"preset": "pytest", "target": "test_sample.py"},
+            )
+        if calls == 4:
+            return action("tool", name="read_file", arguments={"path": "source.txt"})
+        return action("complete", summary="updated source")
+
+    monkeypatch.setattr(cli, "chat", fake_chat)
+
+    cli.main(
+        [
+            "run",
+            "edit and test",
+            "--repo",
+            str(repo),
+            "--coding",
+            "--test-target",
+            "test_sample.py",
+        ]
+    )
+
+    output = capsys.readouterr()
+    assert output.out == "updated source\n"
+    assert (repo / "source.txt").read_text() == "new\n"
+    assert [request.tool for request in requests] == ["edit_file", "run_tests"]
+    assert "changed_paths=source.txt" in output.err
+    assert "last_test_exit_code=0 outcome=passed" in output.err
+
+
+def test_approval_prompt_uses_stderr_and_denies_without_tty(monkeypatch, capsys):
+    import io
+
+    request = cli.ApprovalRequest(
+        "run_tests",
+        Path("/workspace"),
+        preset="pytest",
+        target="tests/test_one.py",
+        executable="/python",
+        argv=("/python", "-m", "pytest", "-q", "--", "tests/test_one.py"),
+    )
+    monkeypatch.setattr(cli.sys, "stdin", io.StringIO("yes\n"))
+    assert not cli._approve_in_terminal(request)
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err == ""
+
+
+def test_approval_prompt_eof_denies_and_preview_stays_on_stderr(monkeypatch, capsys):
+    import io
+
+    class TTYInput(io.StringIO):
+        def isatty(self):
+            return True
+
+    request = cli.ApprovalRequest(
+        "edit_file",
+        Path("/workspace"),
+        path="src/one.py",
+        expected_sha256="a" * 64,
+        old_text="before",
+        new_text="after",
+        diff="-before\n+after\n",
+    )
+    monkeypatch.setattr(cli.sys, "stdin", TTYInput(""))
+    monkeypatch.setattr(cli.sys.stderr, "isatty", lambda: True)
+    assert not cli._approve_in_terminal(request)
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert 'old_text="before"' in output.err
+    assert 'new_text="after"' in output.err
+
+
 def test_run_searches_then_reads_matching_file(monkeypatch, tmp_path, capsys):
     repo = copy_fixture(tmp_path)
     prompts = []

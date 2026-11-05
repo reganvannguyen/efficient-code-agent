@@ -2,7 +2,7 @@
 
 **A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
 
-> **Status:** Early development. The local chat command, stateless interactive loop, and bounded read-only repository agent are implemented. A separately authorized low-level single-file edit tool is available to Python callers; CLI/runtime editing, execution, and independent verification remain future work.
+> **Status:** The local chat command, stateless interactive loop, bounded read-only repository agent, and opt-in coding profile with approved edits and configured pytest runs are implemented. Runtime verification after the last edit remains future work.
 
 ## Why this project?
 
@@ -193,16 +193,34 @@ status means the model proposed an answer; it is unverified and does not prove
 that the answer is correct.
 
 Python callers may invoke `harness.tools.execute_tool(..., allow_edits=True)` to
-authorize one exact `edit_file` request. This API is not enabled by the CLI or
-agent runtime. Edits require the current SHA-256 from `read_file`, match one
-unique exact text fragment, and return a bounded unified diff and write state.
+authorize one exact `edit_file` request directly. The CLI coding profile is
+opt-in with `--coding`; it enables exact-text edits and a fixed pytest runner
+under separate edit and test policies. The default is ASK for both. Each ASK
+operation displays its exact prepared edit or pytest command on stderr and
+requires `y` or `yes` on an interactive stdin. `--auto-approve` changes both
+policies to AUTO and is an explicit operator grant. Read-only tools remain
+automatic.
 
 ```bash
 harness run "Explain how greeting.py combines its prefix and name" --repo ./tests/fixtures/read_only_repo
 python -m harness run "Summarize this project" --repo . \
   --base-url http://127.0.0.1:9931 --model MODEL.gguf --max-tokens 256 \
   --timeout 120 --run-timeout 300 --max-model-calls 20 --max-steps 20
+
+harness run "Fix and test the parser" --repo ./example-repo --coding
+harness run "Fix and test the parser" --repo ./example-repo --coding \
+  --auto-approve --test-target tests/test_parser.py --test-timeout 60
 ```
+
+Repeat `--test-target` to replace the default `.` target with a fixed list of
+existing workspace-relative files or directories. The model can select only
+those configured targets. Tests run as the current Python executable with
+`-m pytest -q -- TARGET`; arbitrary commands, pytest flags, and node selectors
+are not accepted. Test output is bounded. Repository tests can execute code
+with the current user's permissions: this policy is an approval boundary, not
+an OS sandbox. Normal pytest configuration, `conftest.py`, and plugins from the
+trusted repository and environment are loaded. A passing test observation
+does not verify a task, and model completion remains unverified.
 
 Install `rg` as described above and start a compatible llama.cpp server before
 running a task. The run request timeout and overall run deadline are in

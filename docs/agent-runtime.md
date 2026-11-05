@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** The Phase 2 read-only CLI, Phase 3 bounded lexical `search_code`, and separately authorized low-level `edit_file` API are implemented. Autonomous editing and runtime verification remain future work.
+> **Status:** The default Phase 2 read-only CLI, bounded lexical `search_code`, and opt-in coding profile with approval-gated edits and allowlisted pytest execution are implemented. Runtime verification after the last edit remains future work.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -116,7 +116,7 @@ class AgentRun:
     def transition_to(self, status: RunStatus) -> None: ...
 ```
 
-`task` and `workspace` are required at construction. `steps` and `model_calls` are ordinary mutable runtime-owned counters. `transition_to` permits `pending → running` and `running → completed`, `failed`, `limit_reached`, or `cancelled`; every other transition raises `ValueError`. `waiting_approval` is represented as a status for the later approval workflow, but this Phase 2 contract has no transition into or out of it. Terminal statuses cannot be reopened. Run identifiers, model configuration, token usage, evidence, and persistence belong to later runtime work.
+`task` and `workspace` are required at construction. `steps` and `model_calls` are ordinary mutable runtime-owned counters. `transition_to` permits `pending → running`, `running → waiting_approval` or a terminal state, and `waiting_approval → running`, `failed`, `limit_reached`, or `cancelled`; every other transition raises `ValueError`. Terminal statuses cannot be reopened. `changed_paths` records confirmed edit targets, `last_tool_result` keeps the latest bounded tool result, `last_test_result` retains the latest test outcome even if later tools run, and `last_write_state` retains the latest edit's `unchanged`, `applied`, or `unknown` state for final reporting. Run identifiers, model configuration, evidence persistence, and resuming runs remain future work.
 
 ### Normalized action protocol
 
@@ -124,7 +124,7 @@ The implemented `parse_action(text: str) -> Action` accepts exactly one JSON obj
 
 ## 4. Agent loop contract
 
-`harness.agent.runtime.run_agent()` implements the read-only loop described below with an injected model callable and independent budgets for model attempts, processed steps, consecutive invalid actions, request duration, total run duration, prompt bytes, and model response bytes. Its pinned prompt describes separate `list_files`, `search_code`, `read_file`, and `complete` JSON schemas, prohibits Markdown fences, and directs the model to use listing for path-only questions and file reads when contents are requested. It explains that `pattern` uses `Path.match` glob syntax rather than regular expressions and that an empty filtered listing should be retried with a simpler or unfiltered request. The prompt's next-action directive is included in the byte budget after the retained history. Invalid responses are observed with corrective feedback that repeats the exact `read_file` schema and clarifies that the tool name belongs in `name`; the original response excerpt remains capped at 1 KiB. The `run` CLI sends the separate `READ_ONLY_SYSTEM_PROMPT` system message and binds a JSON Schema for both tool requests and completion to the llama.cpp client's `response_format`. It subtracts the system message's UTF-8 byte length from the user-prompt budget, keeping both message contents within the default 24 KiB cap. `run_agent()`'s injected model contract remains `model(prompt, *, timeout=seconds)`; custom callables still receive no schema or system-message argument. Generation constraints do not replace strict parsing, dispatcher validation, or independent verification. A typed transport or timeout error gets one immediate retry using the same prompt; malformed server responses are not retried. A model `complete` action ends the run as `COMPLETED` with `stop_reason="model_complete"`; this is an unverified model proposal, not evidence of correctness. Prompt byte limits do not guarantee a model token limit. Schema-constrained JSON requires a compatible llama.cpp server build; see the [server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1chatcompletions-openai-compatible-chat-completions-api).
+`harness.agent.runtime.run_agent()` keeps its injected model contract `model(prompt, *, timeout=seconds)` and model-call, step, invalid-action, request, run, prompt, and response budgets. With no policy, it uses the existing read-only prompt and schema. A `ToolPolicy` selects a coding prompt and a per-run copy of the schema for enabled edit and pytest tools. The CLI supplies the matching system message. Completion remains an unverified model proposal, including after a passing test run; verification after the last relevant edit is future work. Typed model transport and timeout failures retain their existing retry behavior. Prompt byte limits do not guarantee a model token limit. Schema-constrained JSON requires a compatible llama.cpp server build; see the [server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1chatcompletions-openai-compatible-chat-completions-api).
 
 ```python
 run_agent(
@@ -140,6 +140,8 @@ run_agent(
     max_prompt_bytes: int = 24576,
     max_model_response_bytes: int = 65536,
     cancelled: Callable[[], bool] | None = None,
+    policy: ToolPolicy | None = None,
+    approve: Callable[[ApprovalRequest], bool] | None = None,
 ) -> AgentRun
 ```
 
@@ -214,14 +216,43 @@ Failures must be equally structured: `ok: false`, stable `error_code`, and a con
 
 ### Implemented tool APIs
 
-`harness.tools.dispatcher.execute_tool(action: ToolAction, workspace: Path, *, allow_edits: bool = False) -> ToolResult`
-dispatches `list_files`, `search_code`, and `read_file`; it recognizes `edit_file`
-only when a direct caller explicitly passes `allow_edits=True`. The CLI and agent
-runtime keep the read-only action schema and use the default `False` value. It validates exact field
-sets and value types before resolving the workspace, and returns a frozen
-`ToolResult(tool, ok, data, truncated, error_code, message)`. Call
-`to_dict()` for its JSON-ready representation; the serialized result is capped
-at 32 KiB. Unsupported names and malformed requests return controlled errors.
+`harness.tools.dispatcher.execute_tool(action: ToolAction, workspace: Path, *, allow_edits: bool = False, policy: ToolPolicy | None = None, approve: Callable[[ApprovalRequest], bool] | None = None, deadline: float | None = None, cancelled: Callable[[], bool] | None = None) -> ToolResult`
+dispatches read tools automatically. The legacy `allow_edits=True` direct-call
+path remains available only when `policy` is absent; combining the two is an
+invalid request. A `ToolPolicy` routes edits and tests through policy checks,
+approval, and execution. `ASK` without an approval callback denies; callback
+results other than literal `True` deny; `DENY` always denies. The CLI/runtime
+uses `WAITING_APPROVAL` around callbacks. Exact schemas are validated before
+workspace access, and results are frozen `ToolResult` values with JSON output
+capped at 32 KiB.
+
+`ToolMode` is the string enum `AUTO`, `ASK`, `DENY`. Frozen
+`ToolPolicy(edit_file: ToolMode = ASK, run_tests: ToolMode = ASK,
+test_targets: tuple[str, ...] = (".",), test_timeout: float = 60.0)` keeps
+read-only tools automatic. It rejects invalid modes, target containers, and
+non-finite/non-positive timeouts. `validate_test_policy(root: Path, policy:
+ToolPolicy) -> tuple[str, ...]` runs before inference and rejects missing,
+traversing, flag-like, symlinked, or external targets. Targets are fixed by the
+CLI or Python caller; the model can choose only an exact configured target.
+
+Frozen `ApprovalRequest` contains `tool`, canonical `root`, and either the edit
+path/hash/old/new text plus bounded `diff` and `diff_truncated`, or pytest
+`preset`, `target`, `executable`, and exact `argv`. Edit preparation captures
+the preimage and replacement before approval. `apply_prepared_edit(prepared:
+PreparedEdit) -> ToolResult` rechecks target identity and bytes before staging
+and replacement, so approval cannot authorize a later or modified request.
+The legacy `edit_file(root, arguments)` API calls `prepare_edit()` and then
+`apply_prepared_edit()` directly.
+
+`run_tests(root: Path, target: str, timeout: float, *, deadline: float,
+cancelled: Callable[[], bool] | None = None) -> ToolResult` runs only
+`[sys.executable, "-m", "pytest", "-q", "--", target]` in the canonical
+workspace. It uses POSIX process groups, kills and reaps them on timeout,
+cancellation, output caps, or reader errors, captures at most 16 KiB per
+stream, and keeps the serialized result under 32 KiB. The current trusted
+repository controls normal pytest configuration, conftest files, and plugins;
+the harness command and target preset do not come from the repository. Tests
+execute with the current user's permissions; this is not an OS sandbox.
 
 - `list_files` accepts optional `directory="."` and a positive `pattern` glob.
   It invokes `rg --files --null` with a fixed argument list, honors repository
@@ -284,6 +315,14 @@ at 32 KiB. Unsupported names and malformed requests return controlled errors.
   agent runtime, create files, delete files, run commands, or edit multiple
   files.
 
+`run_tests` requires exactly `preset="pytest"` and a `target` equal to one
+configured policy target. Its fixed command accepts no model-supplied flags,
+arbitrary commands, or pytest node selectors. Results include `preset`,
+`target`, `argv`, `exit_code`, bounded replacement-decoded `stdout` and
+`stderr`, and `timed_out`; outcomes use `tests_failed`, `timeout`,
+`output_limit`, `cancelled`, and controlled execution errors. A passing result
+is test evidence, not independent task verification.
+
 Read/list/search resolve paths within the workspace; read permits in-workspace
 symlinks. Editing rejects all symlink components and applies its additional
 protected-path and single-file rules above. These checks are not an OS sandbox.
@@ -315,6 +354,8 @@ protected-path and single-file rules above. These checks are not an OS sandbox.
 ## 7. Completion and verification
 
 The model may **propose** completion, but cannot declare its own run successful.
+Current `run_agent()` accepts the proposal as `COMPLETED` and reports it as
+unverified; the verifier policy below is planned work and is not implemented.
 
 A completion proposal should contain:
 
