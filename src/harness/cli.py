@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 from functools import partial
 from pathlib import Path
 
 from harness.agent.runtime import (
+    CODING_SYSTEM_PROMPT,
     DEFAULT_MAX_PROMPT_BYTES,
-    READ_ONLY_ACTION_SCHEMA,
     READ_ONLY_SYSTEM_PROMPT,
+    action_schema,
     run_agent,
 )
 from harness.agent.state import RunStatus
 from harness.llama_client import ChatResponse, LlamaClientError, chat
+from harness.tools.policy import ApprovalRequest, ToolMode, ToolPolicy
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -43,6 +46,10 @@ def main(argv: list[str] | None = None) -> None:
     run_parser.add_argument("--run-timeout", type=float, default=300)
     run_parser.add_argument("--max-model-calls", type=int, default=20)
     run_parser.add_argument("--max-steps", type=int, default=20)
+    run_parser.add_argument("--coding", action="store_true")
+    run_parser.add_argument("--auto-approve", action="store_true")
+    run_parser.add_argument("--test-target", action="append", default=None)
+    run_parser.add_argument("--test-timeout", type=float, default=None)
     args = parser.parse_args(args_list)
     if args.command == "run":
         _run(args, parser)
@@ -73,6 +80,14 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     """Run a bounded read-only repository task and report its terminal state."""
     if not args.task.strip():
         parser.error("run task must not be blank")
+    if (
+        args.auto_approve
+        or args.test_target is not None
+        or args.test_timeout is not None
+    ) and not args.coding:
+        parser.error("--auto-approve and test options require --coding")
+    if args.auto_approve and not args.coding:
+        parser.error("--auto-approve requires --coding")
     if args.max_tokens <= 0:
         parser.error("--max-tokens must be positive")
     if args.max_model_calls <= 0:
@@ -85,14 +100,31 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     ):
         if not math.isfinite(value) or value <= 0:
             parser.error(f"{name} must be a finite positive number")
+    if args.test_timeout is not None and (
+        not math.isfinite(args.test_timeout) or args.test_timeout <= 0
+    ):
+        parser.error("--test-timeout must be finite and positive")
 
+    policy = None
+    approve = None
+    prompt = READ_ONLY_SYSTEM_PROMPT
+    if args.coding:
+        mode = ToolMode.AUTO if args.auto_approve else ToolMode.ASK
+        policy = ToolPolicy(
+            edit_file=mode,
+            run_tests=mode,
+            test_targets=tuple(args.test_target or ["."]),
+            test_timeout=60.0 if args.test_timeout is None else args.test_timeout,
+        )
+        prompt = CODING_SYSTEM_PROMPT
+        approve = None if args.auto_approve else _approve_in_terminal
     model = partial(
         chat,
         base_url=args.base_url,
         model=args.model,
         max_tokens=args.max_tokens,
-        response_schema=READ_ONLY_ACTION_SCHEMA,
-        system_prompt=READ_ONLY_SYSTEM_PROMPT,
+        response_schema=action_schema(policy),
+        system_prompt=prompt,
     )
     try:
         run = run_agent(
@@ -103,8 +135,9 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             run_timeout=args.run_timeout,
             max_model_calls=args.max_model_calls,
             max_steps=args.max_steps,
-            max_prompt_bytes=DEFAULT_MAX_PROMPT_BYTES
-            - len(READ_ONLY_SYSTEM_PROMPT.encode("utf-8")),
+            max_prompt_bytes=DEFAULT_MAX_PROMPT_BYTES - len(prompt.encode("utf-8")),
+            policy=policy,
+            approve=approve,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -121,6 +154,20 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"steps={run.steps}{verification}",
         file=sys.stderr,
     )
+    if run.changed_paths:
+        print(f"harness: changed_paths={','.join(run.changed_paths)}", file=sys.stderr)
+    if run.last_write_state == "unknown":
+        print(
+            "harness: write_state=unknown (write outcome is uncertain)", file=sys.stderr
+        )
+    if run.last_test_result:
+        test_data = run.last_test_result.get("data", {})
+        if isinstance(test_data, dict):
+            print(
+                f"harness: last_test_exit_code={test_data.get('exit_code')} "
+                f"outcome={run.last_test_result.get('error_code') or 'passed'}",
+                file=sys.stderr,
+            )
     if run.status is RunStatus.CANCELLED:
         raise SystemExit(130)
     if run.status is not RunStatus.COMPLETED:
@@ -139,6 +186,43 @@ _STOP_DETAILS = {
     "model_error": "model server unavailable or returned an invalid response",
     "cancelled": "run cancelled",
 }
+
+
+def _approve_in_terminal(request: ApprovalRequest) -> bool:
+    """Ask on stderr/stdin only when both terminal channels are interactive."""
+    if not sys.stdin.isatty() or not sys.stderr.isatty():
+        return False
+    if request.tool == "edit_file":
+        print(
+            f"Approve edit in {request.root}: {request.path} "
+            f"(sha256 {request.expected_sha256})?",
+            file=sys.stderr,
+        )
+        print(
+            f"old_text={json.dumps(request.old_text, ensure_ascii=True)}",
+            file=sys.stderr,
+        )
+        print(
+            f"new_text={json.dumps(request.new_text, ensure_ascii=True)}",
+            file=sys.stderr,
+        )
+        print(request.diff[:8192], file=sys.stderr)
+        if request.diff_truncated or len(request.diff) > 8192:
+            print("[diff preview truncated]", file=sys.stderr)
+    else:
+        print(
+            f"Approve tests in {request.root}: preset={request.preset} "
+            f"target={request.target} argv={json.dumps(request.argv)}",
+            file=sys.stderr,
+        )
+    try:
+        print("Approve? [y/N] ", end="", file=sys.stderr, flush=True)
+        answer = sys.stdin.readline()
+    except EOFError:
+        return False
+    if answer == "":
+        return False
+    return answer.strip().casefold() in {"y", "yes"}
 
 
 def interactive() -> None:

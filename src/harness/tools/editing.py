@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 
 from harness.tools.dispatcher import (
@@ -74,8 +75,24 @@ def validate_edit_arguments(arguments: dict[str, object]) -> None:
             )
 
 
-def edit_file(root: Path, arguments: dict[str, object]) -> ToolResult:
-    """Replace one unique exact text fragment after checking its content hash."""
+@dataclass(frozen=True)
+class PreparedEdit:
+    """Immutable edit payload and preimage captured before approval."""
+
+    root: Path
+    path: str
+    expected_sha256: str
+    old_text: str
+    new_text: str
+    original: bytes
+    replacement: bytes
+    identity: tuple[int, int, int, int]
+    mode: int
+    diff: str
+
+
+def prepare_edit(root: Path, arguments: dict[str, object]) -> PreparedEdit | ToolResult:
+    """Validate an edit and prepare its exact replacement without writing."""
     path = str(arguments["path"])
     expected = str(arguments["expected_sha256"]).lower()
     old_text = str(arguments["old_text"])
@@ -132,12 +149,32 @@ def edit_file(root: Path, arguments: dict[str, object]) -> ToolResult:
     replacement = (text[:start] + new_text + text[end:]).encode("utf-8")
     if len(replacement) > MAX_FILE_BYTES:
         raise ToolFailure("invalid_arguments", "replacement exceeds the 1 MiB limit")
-    if replacement == original:
-        return _edit_result(relative, "unchanged", "", True)
-
     diff = _unified_diff(relative, text, replacement.decode("utf-8"))
-    result = _edit_result(relative, "applied", diff, True)
-    mode = stat.S_IMODE(info.st_mode)
+    return PreparedEdit(
+        root,
+        relative,
+        expected,
+        old_text,
+        new_text,
+        original,
+        replacement,
+        (info.st_dev, info.st_ino, info.st_mode, info.st_nlink),
+        stat.S_IMODE(info.st_mode),
+        diff,
+    )
+
+
+def apply_prepared_edit(prepared: PreparedEdit) -> ToolResult:
+    """Commit a prepared edit only if its approved preimage is still current."""
+    root = prepared.root
+    relative = prepared.path
+    target = root / relative
+    original = prepared.original
+    replacement = prepared.replacement
+    if original == replacement:
+        return _edit_result(relative, "unchanged", "", True)
+    result = _edit_result(relative, "applied", prepared.diff, True)
+    mode = prepared.mode
     temp: Path | None = None
     mutation_attempted = False
     try:
@@ -145,7 +182,13 @@ def edit_file(root: Path, arguments: dict[str, object]) -> ToolResult:
         _reject_links(root, target)
         current_info = target.lstat()
         current = _read_target_bounded(target)
-        if not _same_identity(info, current_info) or current != original:
+        identity = (
+            current_info.st_dev,
+            current_info.st_ino,
+            current_info.st_mode,
+            current_info.st_nlink,
+        )
+        if identity != prepared.identity or current != original:
             raise ToolFailure("conflict", "file changed while edit was being prepared")
         mutation_attempted = True
         try:
@@ -192,6 +235,14 @@ def edit_file(root: Path, arguments: dict[str, object]) -> ToolResult:
                 temp.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+def edit_file(root: Path, arguments: dict[str, object]) -> ToolResult:
+    """Legacy one-call API that prepares then commits an exact text edit."""
+    prepared = prepare_edit(root, arguments)
+    if isinstance(prepared, ToolResult):
+        return prepared
+    return apply_prepared_edit(prepared)
 
 
 def _reject_links(root: Path, target: Path) -> None:

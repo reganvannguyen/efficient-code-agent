@@ -31,6 +31,11 @@ _ALLOWED_TRANSITIONS = {
     (RunStatus.RUNNING, RunStatus.FAILED),
     (RunStatus.RUNNING, RunStatus.LIMIT_REACHED),
     (RunStatus.RUNNING, RunStatus.CANCELLED),
+    (RunStatus.RUNNING, RunStatus.WAITING_APPROVAL),
+    (RunStatus.WAITING_APPROVAL, RunStatus.RUNNING),
+    (RunStatus.WAITING_APPROVAL, RunStatus.FAILED),
+    (RunStatus.WAITING_APPROVAL, RunStatus.LIMIT_REACHED),
+    (RunStatus.WAITING_APPROVAL, RunStatus.CANCELLED),
 }
 
 

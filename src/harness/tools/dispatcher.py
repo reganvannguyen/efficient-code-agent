@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import json
+import sys
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
 from harness.agent.protocol import ToolAction
+from harness.tools.policy import ApprovalRequest, ToolMode, ToolPolicy
 
 MAX_RESULT_BYTES = 32 * 1024
 
@@ -86,23 +90,132 @@ def _json_size(value: object) -> int:
 
 
 def execute_tool(
-    action: ToolAction, workspace: Path, *, allow_edits: bool = False
+    action: ToolAction,
+    workspace: Path,
+    *,
+    allow_edits: bool = False,
+    policy: ToolPolicy | None = None,
+    approve: Callable[[ApprovalRequest], bool] | None = None,
+    deadline: float | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> ToolResult:
     """Validate and run one repository tool request; edits require authorization."""
     if not isinstance(allow_edits, bool):
         return _error("", "invalid_arguments", "allow_edits must be a boolean")
+    if policy is not None and not isinstance(policy, ToolPolicy):
+        return _error("", "invalid_arguments", "policy must be a ToolPolicy or None")
+    if policy is not None and allow_edits:
+        return _error("", "invalid_arguments", "allow_edits conflicts with policy")
     if not isinstance(action, ToolAction):
         return _error("", "invalid_arguments", "expected a ToolAction")
     if not isinstance(action.name, str) or not action.name.strip():
         return _error("", "invalid_arguments", "tool name must be a non-blank string")
-    if action.name not in {"list_files", "read_file", "search_code", "edit_file"}:
+    if action.name not in {
+        "list_files",
+        "read_file",
+        "search_code",
+        "edit_file",
+        "run_tests",
+    }:
         return _error(action.name, "unknown_tool", "unsupported tool")
     if not isinstance(action.arguments, dict):
         return _error(action.name, "invalid_arguments", "arguments must be an object")
     try:
         _validate_schema(action.name, action.arguments)
-        if action.name == "edit_file" and not allow_edits:
+        if action.name == "edit_file" and not allow_edits and policy is None:
             raise ToolFailure("permission_denied", "file edits are not authorized")
+        if action.name == "edit_file" and policy is not None:
+            if policy.edit_file is ToolMode.DENY:
+                raise ToolFailure(
+                    "permission_denied", "file edits are denied by policy"
+                )
+            from harness.tools.editing import apply_prepared_edit, prepare_edit
+
+            root = _workspace(workspace)
+            prepared = prepare_edit(root, action.arguments)
+            if isinstance(prepared, ToolResult):
+                return prepared
+            if policy.edit_file is ToolMode.ASK:
+                preview = prepared.diff.encode("utf-8")
+                diff = preview[: 16 * 1024].decode("utf-8", "ignore")
+                request = ApprovalRequest(
+                    "edit_file",
+                    root,
+                    prepared.path,
+                    prepared.expected_sha256,
+                    prepared.old_text,
+                    prepared.new_text,
+                    diff,
+                    len(preview) > 16 * 1024,
+                )
+                if not _approve(approve, request):
+                    return _error(
+                        action.name, "permission_denied", "operation was not approved"
+                    )
+            stopped = _operation_stop(cancelled, deadline)
+            if stopped is not None:
+                return ToolResult(
+                    "edit_file",
+                    False,
+                    {},
+                    error_code=stopped,
+                    message="operation stopped before edit",
+                )
+            return apply_prepared_edit(prepared)
+        if action.name == "run_tests" and policy is None:
+            raise ToolFailure("permission_denied", "test execution requires a policy")
+        if (
+            action.name == "run_tests"
+            and policy is not None
+            and policy.run_tests is ToolMode.DENY
+        ):
+            raise ToolFailure("permission_denied", "test execution is denied by policy")
+        if action.name == "run_tests" and policy is not None:
+            from harness.tools.testing import run_tests, validate_test_policy
+
+            root = _workspace(workspace)
+            targets = validate_test_policy(root, policy)
+            target = str(action.arguments["target"])
+            if action.arguments["preset"] != "pytest" or target not in targets:
+                raise ToolFailure("permission_denied", "test target is not permitted")
+            executable = sys.executable
+            argv = (executable, "-m", "pytest", "-q", "--", target)
+            if policy.run_tests is ToolMode.ASK and not _approve(
+                approve,
+                ApprovalRequest(
+                    "run_tests",
+                    root,
+                    preset="pytest",
+                    target=target,
+                    executable=executable,
+                    argv=argv,
+                ),
+            ):
+                return _error(
+                    action.name, "permission_denied", "operation was not approved"
+                )
+            stopped = _operation_stop(cancelled, deadline)
+            if stopped is not None:
+                return ToolResult(
+                    "run_tests",
+                    False,
+                    {},
+                    error_code=stopped,
+                    message="operation stopped before tests",
+                )
+            if target not in validate_test_policy(root, policy):
+                return _error(
+                    action.name,
+                    "permission_denied",
+                    "test target changed during approval",
+                )
+            return run_tests(
+                root,
+                target,
+                policy.test_timeout,
+                deadline=deadline or float("inf"),
+                cancelled=cancelled,
+            )
         root = _workspace(workspace)
         from harness.tools.repository import list_files, read_file
         from harness.tools.search import search_code
@@ -111,6 +224,8 @@ def execute_tool(
             from harness.tools.editing import edit_file
 
             return edit_file(root, action.arguments)
+        if action.name == "run_tests":
+            raise ToolFailure("permission_denied", "test execution requires a policy")
 
         if action.name == "list_files":
             return list_files(root, action.arguments)
@@ -121,6 +236,8 @@ def execute_tool(
         return _error(action.name, error.code, error.message)
     except OSError:
         return _error(action.name, "io_error", "repository operation failed")
+    except ValueError:
+        return _error(action.name, "invalid_arguments", "tool configuration is invalid")
 
 
 class ToolFailure(Exception):
@@ -145,6 +262,30 @@ def _error(tool: str, code: str, message: str) -> ToolResult:
     return ToolResult(tool, False, {}, error_code=code, message=message)
 
 
+def _approve(
+    callback: Callable[[ApprovalRequest], bool] | None, request: ApprovalRequest
+) -> bool:
+    if callback is None:
+        return False
+    try:
+        return callback(request) is True
+    except (KeyboardInterrupt, Exception):
+        return False
+
+
+def _operation_stop(
+    cancelled: Callable[[], bool] | None, deadline: float | None
+) -> str | None:
+    try:
+        if cancelled is not None and cancelled():
+            return "cancelled"
+    except Exception:
+        return "cancelled"
+    if deadline is not None and time.monotonic() >= deadline:
+        return "timeout"
+    return None
+
+
 def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
     allowed = (
         {"directory", "pattern"}
@@ -153,11 +294,15 @@ def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
         if tool == "search_code"
         else {"path", "start_line", "end_line"}
         if tool == "read_file"
+        else {"preset", "target"}
+        if tool == "run_tests"
         else {"path", "expected_sha256", "old_text", "new_text"}
     )
     required = (
         {"path", "expected_sha256", "old_text", "new_text"}
         if tool == "edit_file"
+        else {"preset", "target"}
+        if tool == "run_tests"
         else {"path"}
         if tool == "read_file"
         else set()
@@ -227,6 +372,16 @@ def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
                 raise ToolFailure(
                     "invalid_arguments", "max_results must be an integer from 1 to 200"
                 )
+        return
+    if tool == "run_tests":
+        if (
+            arguments.get("preset") != "pytest"
+            or not isinstance(arguments.get("target"), str)
+            or not arguments["target"]
+        ):
+            raise ToolFailure(
+                "invalid_arguments", "run_tests requires preset pytest and a target"
+            )
         return
     path = arguments["path"]
     if not isinstance(path, str) or not path.strip():

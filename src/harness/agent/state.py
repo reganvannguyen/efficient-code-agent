@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -30,13 +30,24 @@ class AgentRun:
     model_calls: int = 0
     final_response: str | None = None
     stop_reason: str | None = None
+    changed_paths: list[str] = field(default_factory=list)
+    last_tool_result: dict[str, object] | None = None
+    last_write_state: str | None = None
+    last_test_result: dict[str, object] | None = None
 
     def transition_to(self, status: RunStatus) -> None:
         """Move to a lifecycle state allowed by the current MVP contract."""
         allowed = {
             RunStatus.PENDING: {RunStatus.RUNNING},
             RunStatus.RUNNING: {
+                RunStatus.WAITING_APPROVAL,
                 RunStatus.COMPLETED,
+                RunStatus.FAILED,
+                RunStatus.LIMIT_REACHED,
+                RunStatus.CANCELLED,
+            },
+            RunStatus.WAITING_APPROVAL: {
+                RunStatus.RUNNING,
                 RunStatus.FAILED,
                 RunStatus.LIMIT_REACHED,
                 RunStatus.CANCELLED,

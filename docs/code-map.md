@@ -2,10 +2,10 @@
 
 This guide describes the code that exists today. The Python package currently
 supports a one-request chat command, a stateless interactive prompt loop, a
-read-only repository task command, agent run-state and action parsing, bounded
-read-only repository tools, an explicitly authorized low-level file edit API,
-and a bounded read-only agent loop with independent budgets, cooperative
-cancellation, and transport retry. Interactive prompts
+read-only-by-default repository task command, agent run-state and action
+parsing, bounded read tools, policy-gated edits and fixed pytest execution,
+and a bounded agent loop with independent budgets, cooperative cancellation,
+approval wait, and transport retry. Interactive prompts
 are independent requests with no conversation history. This page is maintained
 alongside code changes, not generated or refreshed by an automatic watcher.
 
@@ -40,11 +40,11 @@ flowchart LR
 modules in this repository. In interactive mode Python sends each nonblank
 prompt as its own non-streaming chat request, without carrying conversation
 history between requests. The one-shot `chat PROMPT` command remains available.
-The action parser and repository dispatcher are used by the `run` command via
-`run_agent()`. That command supports only read-only tools and does not edit
-files. Direct Python callers may pass `allow_edits=True` to the dispatcher; no
-CLI or runtime path exposes that flag. A model completion is reported as
-unverified.
+The action parser and repository dispatcher are used by `run` via `run_agent()`.
+The default command stays read-only. `--coding` opts into separate edit/test
+policies and fixed configured pytest targets; `--auto-approve` explicitly sets
+both to AUTO. Direct Python callers may still pass `allow_edits=True` only when
+no `ToolPolicy` is supplied. A model completion is reported as unverified.
 
 ## Agent runtime flow
 
@@ -90,17 +90,19 @@ flowchart LR
 | --- | --- |
 | [`src/harness/__init__.py`](../src/harness/__init__.py) | Package docstring; no runtime behavior. |
 | [`src/harness/__main__.py`](../src/harness/__main__.py) | Calls `harness.cli.main()` so `python -m harness` works. |
-| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses and validates `chat` and read-only `run` options; binds the system prompt and action schema to the run chat callable; prints the final answer only to stdout and run status details to stderr; handles interactive termination and retryable request errors. |
+| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses `chat`, default read-only `run`, and opt-in `run --coding` options; binds profile-specific system prompts and copied schemas; asks for approval only on interactive stdin/stderr or enables AUTO with explicit `--auto-approve`; reports changed paths and test outcomes to stderr. |
 | [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, optionally prepends a system message and forwards a JSON response schema, sends it with `urllib`, reads at most 1 MiB plus a sentinel, classifies transport/timeouts and oversized bodies, validates/parses JSON, and normalizes available usage counts. |
 | [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, and `run_agent`. |
-| [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses, mutable `AgentRun` state, counters, stop reason, and permitted state transitions. |
+| [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses including approval wait, mutable `AgentRun` counters and stop reason, confirmed `changed_paths`, latest bounded `last_tool_result` and `last_test_result`, `last_write_state`, and permitted state transitions. |
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
-| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines the CLI's system prompt and three-tool action schema; pins exact `tool` / `complete` action formats and repository inspection instructions in the user prompt; gives invalid responses corrective `read_file` schema feedback; validates model timeout compatibility and runtime limits, checks cooperative cancellation and deadlines, retries one typed transport failure, and runs the read-only loop within independent budgets. |
+| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines read-only and coding system prompts, read-only schema and per-run `action_schema(policy)`; pins profile-specific tool instructions; validates model/runtime limits, tracks approval wait transitions, delegates policy decisions to the dispatcher, records edit audit data before stop boundaries, retries one typed transport failure, and runs within independent budgets. |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
-| [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type, validates supported tool schemas before filesystem access, validates the keyword-only `allow_edits` authorization flag, resolves the workspace, and dispatches read-only tools or authorized `edit_file`. |
+| [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type and `execute_tool(...)`; validates exact schemas before workspace access, retains the legacy `allow_edits=True` path only without policy, and owns edit/test AUTO/ASK/DENY checks, approval metadata, target revalidation, and dispatch. |
 | [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks; successful reads include the SHA-256 of complete file bytes for edit preconditions. |
-| [`src/harness/tools/editing.py`](../src/harness/tools/editing.py) | Validates exact-text edit arguments, protected paths and file safety; checks the supplied content hash and unique match; prepares a bounded unified diff and same-directory fsynced temporary file; rechecks identity/content before atomic replacement; reconciles replacement exceptions into `unchanged`, `applied`, or `unknown` audit results. |
+| [`src/harness/tools/editing.py`](../src/harness/tools/editing.py) | Defines frozen `PreparedEdit`, separates `prepare_edit()` from `apply_prepared_edit()` so approved data is immutable and revalidated against the preimage, and retains `edit_file()` as the direct prepare/apply API; validates protected paths and reconciles writes into `unchanged`, `applied`, or `unknown`. |
 | [`src/harness/tools/search.py`](../src/harness/tools/search.py) | Validates regular expressions with ripgrep, runs bounded JSON lexical search under one deadline, filters workspace-relative matches and filename globs, deduplicates path/line hits, and returns sorted bounded previews. |
+| [`src/harness/tools/policy.py`](../src/harness/tools/policy.py) | Defines frozen `ToolPolicy` with edit/test `ToolMode` values and fixed pytest targets/timeout, plus frozen `ApprovalRequest` metadata for prepared edits and exact pytest invocations. |
+| [`src/harness/tools/testing.py`](../src/harness/tools/testing.py) | Validates configured targets before inference; runs only the fixed pytest argv, captures bounded UTF-8-safe output, kills and reaps POSIX process groups on timeout/cancellation/output/error, and preserves bounded result metadata. |
 
 ## Agent runtime contracts
 
@@ -108,11 +110,13 @@ flowchart LR
 `waiting_approval`, `completed`, `failed`, `limit_reached`, and `cancelled`.
 `AgentRun(task: str, workspace: Path, status: RunStatus = PENDING, steps: int =
 0, model_calls: int = 0, final_response: str | None = None, stop_reason: str |
-None = None)` is mutable.
-`transition_to(status: RunStatus) -> None` permits `PENDING → RUNNING` and
-`RUNNING → COMPLETED`, `FAILED`, `LIMIT_REACHED`, or `CANCELLED`. Other
-transitions, including all transitions involving `WAITING_APPROVAL`, raise
-`ValueError`; terminal states are immutable. `model_calls` counts attempted
+None = None, changed_paths: list[str] = [], last_tool_result: dict | None =
+None, last_write_state: str | None = None, last_test_result: dict | None =
+None)` is mutable; `changed_paths` uses a per-instance list factory.
+`transition_to(status: RunStatus) -> None` permits `PENDING → RUNNING`,
+`RUNNING → WAITING_APPROVAL` or a terminal state, and
+`WAITING_APPROVAL → RUNNING`, `FAILED`, `LIMIT_REACHED`, or `CANCELLED`.
+Other transitions raise `ValueError`; terminal states are immutable. `model_calls` counts attempted
 inference calls, while `steps` counts processed responses, including invalid
 actions. Stop reasons include `model_complete`, `model_call_limit`,
 `step_limit`, `invalid_action_limit`, `prompt_budget`, `model_output_limit`,
@@ -167,6 +171,12 @@ name belongs in `name`, and a UTF-8-safe excerpt of the rejected response. `comp
 performed, so this status alone does not establish correctness.
 
 Runtime helpers in [`runtime.py`](../src/harness/agent/runtime.py):
+`action_schema(policy: ToolPolicy | None = None) -> dict[str, object]` returns
+a deep-copied schema with only enabled coding actions; `_execute_runtime_tool(...)`
+delegates authorization/execution to the dispatcher, then records `last_tool_result`
+and confirmed paths before stop boundaries; `_request_approval(run, approve,
+request, cancelled, deadline) -> bool` performs the `WAITING_APPROVAL` transition,
+fails closed, and checks cancellation/deadline after approval.
 `_validate_invocation(task, workspace, model, max_model_calls, max_steps,
 max_consecutive_invalid_actions, request_timeout, run_timeout,
 max_prompt_bytes, max_model_response_bytes, cancelled) -> Path` validates
@@ -178,10 +188,11 @@ while forwarding the smaller request/remaining-run timeout;
 monotonic deadline; `_stop(run: AgentRun, status: RunStatus, reason: str) ->
 None` records the reason and transitions the run; `_exchange(action: object,
 observation: object) -> str` serializes one JSON history entry;
-`_build_prompt(task: str, history: list[str], byte_limit: int) -> str | None`
-assembles the pinned prompt and trailing `_NEXT_ACTION` directive, trimming
+`_build_prompt(task: str, history: list[str], byte_limit: int, *, policy: ToolPolicy | None = None) -> str | None`
+assembles the pinned profile prompt and matching next-action directive, trimming
 oldest complete history entries in place until they fit the byte limit, or
 returns `None` when the pinned prompt, directive, and newest entry cannot fit;
+`_coding_prompt(policy: ToolPolicy) -> tuple[str, str]` lists only enabled coding tools and exact configured pytest targets;
 `_utf8_excerpt(value: str, byte_limit: int) -> str` returns a UTF-8-safe
 excerpt bounded by bytes.
 
@@ -202,14 +213,23 @@ constants. The CLI does not use these APIs; `run_agent()` calls
 ### Repository tool APIs
 
 `execute_tool(action: ToolAction, workspace: Path, *, allow_edits: bool =
-False) -> ToolResult` supports `list_files`, `search_code`, and `read_file` by
-default. It recognizes `edit_file` only when a direct caller explicitly passes
-`allow_edits=True`; the CLI and agent runtime do not expose this flag. It checks
-the exact argument schema and types before resolving the existing workspace
-directory. Unknown tools and invalid requests return a structured failure.
-Workspace paths must be relative and stay within the canonical workspace after
-symlink resolution. This check does not protect against hostile concurrent
-filesystem changes.
+False, policy: ToolPolicy | None = None, approve: Callable[[ApprovalRequest],
+bool] | None = None, deadline: float | None = None, cancelled:
+Callable[[], bool] | None = None) -> ToolResult` dispatches read tools by
+default. The legacy `allow_edits=True` is supported only when policy is absent.
+With a policy, dispatcher owns edit/test mode checks, approval, exact operation
+preparation, and execution. It validates exact schemas before resolving the
+workspace and returns structured failures. Workspace path checks do not
+protect against hostile concurrent filesystem changes.
+
+`ToolMode` contains `AUTO`, `ASK`, and `DENY`. Frozen
+`ToolPolicy(edit_file: ToolMode = ASK, run_tests: ToolMode = ASK,
+test_targets: tuple[str, ...] = (".",), test_timeout: float = 60.0)` keeps
+read-only tools automatic. `__post_init__()` validates modes, target tuple,
+and finite positive timeout. Frozen `ApprovalRequest` records canonical root
+and exact edit metadata or pytest command metadata. `normalize_target(target:
+str) -> str` removes harmless relative path spelling differences. `validate_test_policy(root: Path, policy: ToolPolicy) -> tuple[str, ...]`
+validates existing, contained, nonsymlink targets before model inference.
 
 `list_files(root: Path, arguments: dict[str, object]) -> ToolResult` accepts
 optional `directory` (default `.`) and nonblank string `pattern`. It calls
@@ -282,6 +302,21 @@ against actual target bytes. Concurrent mutation after the final check and
 process termination during replacement cannot be rolled back or reported.
 This direct dispatcher API does not enable model-requested edits.
 
+`PreparedEdit` is frozen and carries the root, relative target, expected hash,
+exact replacement text, captured preimage/identity, mode, and diff.
+`prepare_edit(root: Path, arguments: dict[str, object]) -> PreparedEdit | ToolResult`
+does not write. `apply_prepared_edit(prepared: PreparedEdit) -> ToolResult`
+revalidates preimage and identity before applying that exact operation.
+`edit_file()` remains the one-call legacy wrapper around preparation/apply.
+
+`run_tests(root: Path, target: str, timeout: float, *, deadline: float,
+cancelled: Callable[[], bool] | None = None) -> ToolResult` invokes only the
+fixed pytest argv with a configured exact target. `MAX_STREAM_BYTES` is 16 KiB
+per stream. `_test_result(...)` preserves command/outcome metadata while
+fitting output to the 32 KiB result budget; `_kill_group(process)` kills and
+reaps the POSIX process group; `_drain_and_reap(...)` closes readers and
+ensures the process is reaped.
+
 Helpers in `harness.tools.editing`:
 
 - `validate_edit_arguments(arguments: dict[str, object]) -> None` checks hash,
@@ -347,6 +382,7 @@ With an empty argument list it calls `interactive()`. Otherwise accepts:
 chat PROMPT [--base-url URL] [--model NAME] [--timeout SECONDS] [--max-tokens N]
 run TASK [--repo PATH] [--base-url URL] [--model NAME] [--timeout SECONDS]
     [--max-tokens N] [--run-timeout SECONDS] [--max-model-calls N] [--max-steps N]
+    [--coding] [--auto-approve] [--test-target PATH]... [--test-timeout SECONDS]
 ```
 
 Defaults: `http://127.0.0.1:9931`,
@@ -360,6 +396,10 @@ stderr only when at least one count is available.
 256 response tokens, a 120-second request timeout, a 300-second run deadline,
 20 model calls, and 20 steps. `--timeout` is passed to the runtime as its
 request timeout; the runtime also shortens it to the remaining run deadline.
+`--coding` opts into separate ASK edit/test policies, `--auto-approve` requires
+`--coding` and explicitly grants AUTO, repeated `--test-target` values replace
+the default `.`, and `--test-timeout` defaults to 60 seconds. ASK prompts use
+only interactive stdin/stderr and deny when that channel is unavailable.
 Invalid tasks, repository paths, and limits are argparse errors (exit 2) before
 inference. On completion the final answer alone is written to stdout. Stderr
 reports status, stop reason, model-call and step counts, and labels completion
@@ -368,8 +408,9 @@ prompt/output budgets are bytes, not tokens. Cancellation is cooperative at
 runtime boundaries and cannot forcibly stop an in-flight request.
 
 Internal helper `_run(args: argparse.Namespace, parser: argparse.ArgumentParser)
--> None` binds model URL/name/token settings, the read-only system prompt, and
-the action schema with `functools.partial`; it reduces `max_prompt_bytes` by
+-> None` validates coding-only CLI flags, builds the optional immutable policy,
+binds the matching system prompt and per-run action schema with
+`functools.partial`; it reduces `max_prompt_bytes` by
 the system prompt's UTF-8 length so system plus user message contents remain
 within 24 KiB; then it passes that callable and budgets to `run_agent()` and
 maps the terminal run to output streams and exit code. `_STOP_DETAILS` maps
