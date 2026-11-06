@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import shutil
@@ -719,3 +720,53 @@ def test_live_run_smoke_reads_both_fixture_files(monkeypatch, tmp_path, capsys):
     assert captured.out.strip()
     assert {"settings.py", "greeting.py"} <= read_paths
     assert {p.name: p.read_bytes() for p in repo.iterdir() if p.is_file()} == before
+
+
+def test_cli_reports_verified_completion_and_diff(monkeypatch, tmp_path, capsys):
+    calc = tmp_path / "calc.py"
+    calc.write_text("x = 1\n")
+    test_file = tmp_path / "test_calc.py"
+    test_file.write_text("from calc import x\ndef test_calc(): assert x == 2\n")
+    digest = hashlib.sha256(b"x = 1\n").hexdigest()
+
+    actions = iter(
+        [
+            action(
+                "tool",
+                name="edit_file",
+                arguments={
+                    "path": "calc.py",
+                    "expected_sha256": digest,
+                    "old_text": "x = 1",
+                    "new_text": "x = 2",
+                },
+            ),
+            action(
+                "tool",
+                name="run_tests",
+                arguments={"preset": "pytest", "target": "test_calc.py"},
+            ),
+            action("complete", summary="Bug fixed and verified"),
+        ]
+    )
+
+    monkeypatch.setattr(cli, "chat", lambda _p, **_kw: next(actions))
+    cli.main(
+        [
+            "run",
+            "Fix test",
+            "--repo",
+            str(tmp_path),
+            "--coding",
+            "--auto-approve",
+            "--test-target",
+            "test_calc.py",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert "status=completed" in captured.err
+    assert "verification=verified" in captured.err
+    assert "(verified completion)" in captured.err
+    assert "candidate_diff:" in captured.err
+    assert "tests_executed=1" in captured.err
+    assert captured.out.strip() == "Bug fixed and verified"

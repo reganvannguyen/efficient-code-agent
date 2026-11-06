@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from harness.agent.verification import VerificationQuality
+
 
 class RunStatus(str, Enum):
     """Lifecycle states available to an agent run."""
@@ -34,6 +36,12 @@ class AgentRun:
     last_tool_result: dict[str, object] | None = None
     last_write_state: str | None = None
     last_test_result: dict[str, object] | None = None
+    verification_quality: VerificationQuality = VerificationQuality.UNVERIFIED
+    candidate_diff: str = ""
+    test_invocations: list[dict[str, object]] = field(default_factory=list)
+    unresolved_issues: list[str] = field(default_factory=list)
+    last_edit_step: int | None = None
+    last_test_step: int | None = None
 
     def transition_to(self, status: RunStatus) -> None:
         """Move to a lifecycle state allowed by the current MVP contract."""
