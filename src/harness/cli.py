@@ -145,21 +145,33 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if run.status is RunStatus.COMPLETED:
         print(run.final_response or "")
     detail = _STOP_DETAILS.get(run.stop_reason, "run stopped")
-    verification = (
-        " (unverified model completion)" if run.status is RunStatus.COMPLETED else ""
-    )
+    if run.status is RunStatus.COMPLETED:
+        verification = (
+            " (verified completion)"
+            if run.verification_quality.value == "verified"
+            else " (unverified model completion)"
+        )
+    else:
+        verification = ""
     print(
         f"harness: {detail}; status={run.status.value} "
         f"stop_reason={run.stop_reason} model_calls={run.model_calls} "
         f"steps={run.steps}{verification}",
         file=sys.stderr,
     )
+    print(f"harness: verification={run.verification_quality.value}", file=sys.stderr)
     if run.changed_paths:
         print(f"harness: changed_paths={','.join(run.changed_paths)}", file=sys.stderr)
     if run.last_write_state == "unknown":
         print(
             "harness: write_state=unknown (write outcome is uncertain)", file=sys.stderr
         )
+    if run.candidate_diff:
+        print(
+            f"harness: candidate_diff:\n{run.candidate_diff.strip()}", file=sys.stderr
+        )
+    if run.test_invocations:
+        print(f"harness: tests_executed={len(run.test_invocations)}", file=sys.stderr)
     if run.last_test_result:
         test_data = run.last_test_result.get("data", {})
         if isinstance(test_data, dict):
@@ -168,6 +180,11 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
                 f"outcome={run.last_test_result.get('error_code') or 'passed'}",
                 file=sys.stderr,
             )
+    if run.unresolved_issues:
+        print(
+            f"harness: unresolved_issues={'; '.join(run.unresolved_issues)}",
+            file=sys.stderr,
+        )
     if run.status is RunStatus.CANCELLED:
         raise SystemExit(130)
     if run.status is not RunStatus.COMPLETED:
@@ -185,6 +202,7 @@ _STOP_DETAILS = {
     "model_timeout": "model request timed out",
     "model_error": "model server unavailable or returned an invalid response",
     "cancelled": "run cancelled",
+    "no_progress": "agent stopped due to repeated actions without progress",
 }
 
 

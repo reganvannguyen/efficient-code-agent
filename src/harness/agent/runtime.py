@@ -12,6 +12,10 @@ from time import monotonic
 
 from harness.agent.protocol import CompleteAction, ToolAction, parse_action
 from harness.agent.state import AgentRun, RunStatus
+from harness.agent.verification import (
+    NoProgressTracker,
+    evaluate_verification,
+)
 from harness.llama_client import (
     ChatResponse,
     LlamaClientError,
@@ -30,6 +34,7 @@ from harness.tools.policy import (
 DEFAULT_MAX_MODEL_CALLS = 20
 DEFAULT_MAX_STEPS = 20
 DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS = 3
+DEFAULT_MAX_NO_PROGRESS_REPETITIONS = 4
 DEFAULT_REQUEST_TIMEOUT = 120.0
 DEFAULT_RUN_TIMEOUT = 300.0
 DEFAULT_MAX_PROMPT_BYTES = 24_576
@@ -237,6 +242,9 @@ def run_agent(
             raise ValueError("approve must be callable or None")
     run = AgentRun(task=task, workspace=root)
     run.transition_to(RunStatus.RUNNING)
+    no_progress_tracker = NoProgressTracker(
+        max_repetitions=DEFAULT_MAX_NO_PROGRESS_REPETITIONS
+    )
     history: list[str] = []
     try:
         deadline = monotonic() + run_timeout
@@ -297,6 +305,28 @@ def run_agent(
                 stop = _boundary_stop(run, cancelled, deadline)
                 if stop:
                     return stop
+                quality, rejection_reason = evaluate_verification(run, policy)
+                if rejection_reason is not None:
+                    run.verification_quality = quality
+                    if no_progress_tracker.record_completion_rejection():
+                        run.unresolved_issues.append(
+                            f"Repeated unverified completion proposals rejected: {rejection_reason}"
+                        )
+                        _stop(run, RunStatus.FAILED, "no_progress")
+                        return run
+                    history.append(
+                        _exchange(
+                            {"kind": "complete", "summary": action.summary},
+                            {
+                                "error": rejection_reason,
+                                "rejection": "unverified_completion",
+                            },
+                        )
+                    )
+                    continue
+
+                no_progress_tracker.reset()
+                run.verification_quality = quality
                 run.final_response = action.summary
                 _stop(run, RunStatus.COMPLETED, "model_complete")
                 return run
@@ -319,6 +349,12 @@ def run_agent(
                     invalid_streak += 1
                 else:
                     invalid_streak = 0
+                    if no_progress_tracker.record_action(action.name, action.arguments):
+                        run.unresolved_issues.append(
+                            f"Repeated identical tool call without progress: {action.name}"
+                        )
+                        _stop(run, RunStatus.LIMIT_REACHED, "no_progress")
+                        return run
                 history.append(
                     _exchange(
                         {
@@ -406,8 +442,32 @@ def _execute_runtime_tool(
         write_state = result.data.get("write_state")
         if isinstance(write_state, str):
             run.last_write_state = write_state
+        if result.ok:
+            run.last_edit_step = run.steps
+            diff = result.data.get("diff")
+            if isinstance(diff, str) and diff:
+                if run.candidate_diff:
+                    run.candidate_diff += "\n" + diff
+                else:
+                    run.candidate_diff = diff
+        else:
+            run.unresolved_issues.append(
+                f"Edit failed at step {run.steps}: {result.error_code or 'unknown_error'}"
+            )
     if result.tool == "run_tests":
         run.last_test_result = data
+        test_data = result.data if isinstance(result.data, dict) else {}
+        exit_code = test_data.get("exit_code") if isinstance(test_data, dict) else None
+        run.test_invocations.append(
+            {
+                "step": run.steps,
+                "target": test_data.get("target"),
+                "exit_code": exit_code,
+                "ok": result.ok,
+                "error_code": result.error_code,
+            }
+        )
+        run.last_test_step = run.steps
     changed = result.data.get("changed_paths", [])
     if isinstance(changed, list):
         for path in changed:

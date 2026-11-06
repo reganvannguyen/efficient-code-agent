@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1, the read-only Phase 2 CLI, and opt-in Phase 3 edit/test policy are implemented, with deterministic tests and a successful local multi-file smoke test. Verification after the last relevant edit remains future work.
+> **Status:** Phase 1, Phase 2, and Phase 3 post-edit verification and no-progress handling are implemented, with deterministic tests and a successful local multi-file smoke test. Task fixture isolation remains future work.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -128,9 +128,9 @@ Extend the read-only agent into a coding agent that can find code, make changes,
 - [x] Add `run_tests` using a fixed pytest command, configured workspace-relative targets, bounded output, and subprocess timeouts.
 - [x] Define separate edit/test approval modes (`AUTO`, `ASK`, `DENY`) with opt-in CLI approval and explicit `--auto-approve` grants.
 - [x] Return structured tool results, including failed tests, conflicts, timeout, cancellation, and uncertain edit write states.
-- [ ] Implement runtime verification using recorded test evidence **after the last relevant edit**; distinguish model completion proposals from runtime verification and independent benchmark resolution.
-- [ ] Report final diff, executed checks, unresolved issues, and terminal status.
-- [ ] Add no-progress detection for repeated identical actions.
+- [x] Implement runtime verification using recorded test evidence **after the last relevant edit**; distinguish model completion proposals from runtime verification and independent benchmark resolution.
+- [x] Report final diff, executed checks, unresolved issues, and terminal status.
+- [x] Add no-progress detection for repeated identical actions.
 - [ ] Test clean-workspace preparation and isolation for fixture tasks.
 
 ### Tests
@@ -138,7 +138,7 @@ Extend the read-only agent into a coding agent that can find code, make changes,
 - [ ] Agent fixes a deliberately broken function in a small repository.
 - [x] Agent runs a targeted test after editing in deterministic runtime coverage.
 - [ ] A failed test can lead to another edit and a successful retry.
-- [ ] A model's unsupported claim that tests passed is rejected.
+- [x] A model's unsupported claim that tests passed is rejected.
 - [x] Arbitrary commands and out-of-workspace edits are denied.
 - [x] Test timeout and partial tool output are bounded and reported; edit replacement uncertainty is audited.
 

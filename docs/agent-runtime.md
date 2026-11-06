@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** The default Phase 2 read-only CLI, bounded lexical `search_code`, and opt-in coding profile with approval-gated edits and allowlisted pytest execution are implemented. Runtime verification after the last edit remains future work.
+> **Status:** The default Phase 2 read-only CLI, bounded lexical `search_code`, opt-in coding profile with approval-gated edits, allowlisted pytest execution, post-edit verification, and no-progress handling are implemented.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -380,9 +380,14 @@ The verifier compares claims against **recorded tool evidence**, not the model's
 
 **Canonical distinction:** A model's `complete` action is a **completion proposal**, not a success verdict. `COMPLETED` is a **runtime terminal state** granted under the configured verification policy; record verification quality separately as `verified`, `partially_verified`, or `unverified`. Under a strict coding policy, only verified evidence permits `COMPLETED`; permissive informational runs may end with a qualified, non-benchmark outcome. **Benchmark resolution is separate** and is determined only by the independent task oracle, never by the model's claim or the runtime status.
 
+Implemented in `harness.agent.verification`:
+- `VerificationQuality`: `VERIFIED` (passing test strictly after last edit), `PARTIALLY_VERIFIED` (failing post-edit test), and `UNVERIFIED` (no post-edit test run or informational completion).
+- `NoProgressTracker`: Tracks consecutive identical valid tool calls and consecutive rejected completions (default threshold 4).
+- Post-edit enforcement: Rejects completion proposals in coding mode if edits were made without a post-edit test, returning corrective prompt feedback.
+
 ### No-progress handling
 
-Track repeated identical tool calls, repeated unchanged patches, and repeated completion rejections. After a configurable threshold, prompt the model to change approach or terminate as `FAILED` / `LIMIT_REACHED`, according to the reason.
+Track repeated identical tool calls, repeated unchanged patches, and repeated completion rejections. After 4 consecutive identical actions or repeated unverified completion rejections, terminate as `LIMIT_REACHED` or `FAILED` with stop reason `no_progress`.
 
 ## 8. Budgets, stopping, and cancellation
 
@@ -394,6 +399,7 @@ The runtime currently enforces the following budgets:
 | Maximum total steps | Bound tool/context-edit cycles |
 | Wall-clock timeout | Bound overall task duration |
 | Maximum consecutive invalid actions | Detect model/tool-protocol incompatibility |
+| Maximum no-progress repetitions | Prevent infinite duplicate action or rejection loops |
 | Maximum prompt and model response bytes | Bound UTF-8 request/response text |
 
 Token-based limits, per-tool execution timeouts, and no-progress limits remain

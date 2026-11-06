@@ -90,12 +90,13 @@ flowchart LR
 | --- | --- |
 | [`src/harness/__init__.py`](../src/harness/__init__.py) | Package docstring; no runtime behavior. |
 | [`src/harness/__main__.py`](../src/harness/__main__.py) | Calls `harness.cli.main()` so `python -m harness` works. |
-| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses `chat`, default read-only `run`, and opt-in `run --coding` options; binds profile-specific system prompts and copied schemas; asks for approval only on interactive stdin/stderr or enables AUTO with explicit `--auto-approve`; reports changed paths and test outcomes to stderr. |
+| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses `chat`, default read-only `run`, and opt-in `run --coding` options; binds profile-specific system prompts and copied schemas; asks for approval only on interactive stdin/stderr or enables AUTO with explicit `--auto-approve`; reports changed paths, test outcomes, verification quality, candidate diff, and unresolved issues to stderr. |
 | [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, optionally prepends a system message and forwards a JSON response schema, sends it with `urllib`, reads at most 1 MiB plus a sentinel, classifies transport/timeouts and oversized bodies, validates/parses JSON, and normalizes available usage counts. |
-| [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, and `run_agent`. |
-| [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses including approval wait, mutable `AgentRun` counters and stop reason, confirmed `changed_paths`, latest bounded `last_tool_result` and `last_test_result`, `last_write_state`, and permitted state transitions. |
+| [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, verification quality, no-progress tracker, and `run_agent`. |
+| [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses including approval wait, mutable `AgentRun` counters and stop reason, confirmed `changed_paths`, latest bounded `last_tool_result` and `last_test_result`, `last_write_state`, verification quality, candidate diff, test invocations, unresolved issues, edit/test step indices, and permitted state transitions. |
+| [`src/harness/agent/verification.py`](../src/harness/agent/verification.py) | Defines `VerificationQuality` (`verified`, `partially_verified`, `unverified`), `NoProgressTracker` for repeated identical tool actions and rejected completions, and `evaluate_verification` to enforce post-edit passing test requirements. |
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
-| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines read-only and coding system prompts, read-only schema and per-run `action_schema(policy)`; pins profile-specific tool instructions; validates model/runtime limits, tracks approval wait transitions, delegates policy decisions to the dispatcher, records edit audit data before stop boundaries, retries one typed transport failure, and runs within independent budgets. |
+| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines read-only and coding system prompts, read-only schema and per-run `action_schema(policy)`; pins profile-specific tool instructions; validates model/runtime limits, tracks approval wait transitions, delegates policy decisions to the dispatcher, checks post-edit passing tests and no-progress repetitions, records candidate diffs, retries one typed transport failure, and runs within independent budgets. |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
 | [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type and `execute_tool(...)`; validates exact schemas before workspace access, retains the legacy `allow_edits=True` path only without policy, and owns edit/test AUTO/ASK/DENY checks, approval metadata, target revalidation, and dispatch. |
 | [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks; successful reads include the SHA-256 of complete file bytes for edit preconditions. |
@@ -166,9 +167,15 @@ the directive's bytes count toward the budget. If the pinned content or newest
 exchange does not fit, the run stops with `LIMIT_REACHED` and `prompt_budget`
 before inference. The limit measures bytes, not model tokens. An invalid
 response gets the valid `read_file` request schema, a reminder that the tool
-name belongs in `name`, and a UTF-8-safe excerpt of the rejected response. `complete` stores its summary as
-`final_response` and ends `COMPLETED` with `model_complete`; no verification is
-performed, so this status alone does not establish correctness.
+name belongs in `name`, and a UTF-8-safe excerpt of the rejected response.
+`complete` triggers `evaluate_verification(run, policy)`. In read-only runs or coding
+runs without file changes, completion stores its summary as `final_response` and
+ends `COMPLETED` with `VerificationQuality.UNVERIFIED`. When files have been modified,
+completion requires a recorded passing `run_tests` call strictly after the latest edit;
+otherwise the proposal is rejected with corrective feedback. Repeated unverified
+proposals or identical valid tool calls trigger `NoProgressTracker` and terminate with
+`no_progress`. A verified run ends `COMPLETED` with `VerificationQuality.VERIFIED`.
+This status alone remains a runtime verification result, not independent benchmark resolution.
 
 Runtime helpers in [`runtime.py`](../src/harness/agent/runtime.py):
 `action_schema(policy: ToolPolicy | None = None) -> dict[str, object]` returns
