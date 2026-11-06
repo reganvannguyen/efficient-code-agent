@@ -23,6 +23,7 @@ include = ["harness*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+norecursedirs = ["fixtures", ".*"]
 
 [tool.ruff]
 line-length = 88

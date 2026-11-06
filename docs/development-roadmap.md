@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1, Phase 2, and Phase 3 post-edit verification and no-progress handling are implemented, with deterministic tests and a successful local multi-file smoke test. Task fixture isolation remains future work.
+> **Status:** Phase 1, Phase 2, and Phase 3 (coding agent with edit-test-retry, post-edit verification, and fixture isolation) are fully implemented, with deterministic integration tests and verified fixture recovery. Phase 4 baseline evaluation is the next milestone.
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -131,13 +131,13 @@ Extend the read-only agent into a coding agent that can find code, make changes,
 - [x] Implement runtime verification using recorded test evidence **after the last relevant edit**; distinguish model completion proposals from runtime verification and independent benchmark resolution.
 - [x] Report final diff, executed checks, unresolved issues, and terminal status.
 - [x] Add no-progress detection for repeated identical actions.
-- [ ] Test clean-workspace preparation and isolation for fixture tasks.
+- [x] Test clean-workspace preparation and isolation for fixture tasks.
 
 ### Tests
 
-- [ ] Agent fixes a deliberately broken function in a small repository.
+- [x] Agent fixes a deliberately broken function in a small repository.
 - [x] Agent runs a targeted test after editing in deterministic runtime coverage.
-- [ ] A failed test can lead to another edit and a successful retry.
+- [x] A failed test can lead to another edit and a successful retry.
 - [x] A model's unsupported claim that tests passed is rejected.
 - [x] Arbitrary commands and out-of-workspace edits are denied.
 - [x] Test timeout and partial tool output are bounded and reported; edit replacement uncertainty is audited.
