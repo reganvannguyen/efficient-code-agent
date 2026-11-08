@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import time
+import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
+from harness.agent.events import BenchmarkOutcome, RunEvent
 from harness.agent.verification import VerificationQuality
 
 
@@ -42,6 +45,15 @@ class AgentRun:
     unresolved_issues: list[str] = field(default_factory=list)
     last_edit_step: int | None = None
     last_test_step: int | None = None
+    run_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    events: list[RunEvent] = field(default_factory=list)
+    benchmark_outcome: BenchmarkOutcome = BenchmarkOutcome.NOT_EVALUATED
+    total_prompt_tokens: int | None = None
+    total_completion_tokens: int | None = None
+    total_tokens: int | None = None
+    start_time: float = field(default_factory=time.time)
+    end_time: float | None = None
+    duration_seconds: float = 0.0
 
     def transition_to(self, status: RunStatus) -> None:
         """Move to a lifecycle state allowed by the current MVP contract."""

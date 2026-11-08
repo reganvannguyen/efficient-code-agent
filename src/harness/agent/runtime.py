@@ -6,10 +6,12 @@ import copy
 import inspect
 import json
 import math
+import time
 from collections.abc import Callable
 from pathlib import Path
 from time import monotonic
 
+from harness.agent.events import BenchmarkOutcome, RunEvent, RunEventType
 from harness.agent.protocol import CompleteAction, ToolAction, parse_action
 from harness.agent.state import AgentRun, RunStatus
 from harness.agent.verification import (
@@ -211,6 +213,7 @@ def run_agent(
     cancelled: Callable[[], bool] | None = None,
     policy: ToolPolicy | None = None,
     approve: Callable[[ApprovalRequest], bool] | None = None,
+    on_event: Callable[[RunEvent], None] | None = None,
 ) -> AgentRun:
     """Run a cooperative, bounded tool loop for one repository task.
 
@@ -229,6 +232,7 @@ def run_agent(
         max_prompt_bytes,
         max_model_response_bytes,
         cancelled,
+        on_event,
     )
     if policy is not None:
         from harness.tools.testing import validate_test_policy
@@ -242,6 +246,45 @@ def run_agent(
             raise ValueError("approve must be callable or None")
     run = AgentRun(task=task, workspace=root)
     run.transition_to(RunStatus.RUNNING)
+
+    sequence = 0
+
+    def emit(
+        event_type: RunEventType,
+        step: int = 0,
+        data: dict[str, object] | None = None,
+        duration_ms: float | None = None,
+    ) -> RunEvent:
+        nonlocal sequence
+        sequence += 1
+        event = RunEvent.create(
+            run_id=run.run_id,
+            sequence=sequence,
+            event_type=event_type,
+            step=step,
+            duration_ms=duration_ms,
+            data=data,
+        )
+        run.events.append(event)
+        if on_event is not None:
+            try:
+                on_event(event)
+            except Exception:
+                pass
+        return event
+
+    emit(
+        RunEventType.RUN_STARTED,
+        step=0,
+        data={
+            "task": task,
+            "workspace": str(root),
+            "max_model_calls": max_model_calls,
+            "max_steps": max_steps,
+            "run_timeout": run_timeout,
+        },
+    )
+
     no_progress_tracker = NoProgressTracker(
         max_repetitions=DEFAULT_MAX_NO_PROGRESS_REPETITIONS
     )
@@ -251,14 +294,14 @@ def run_agent(
         invalid_streak = 0
 
         while True:
-            stop = _boundary_stop(run, cancelled, deadline)
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
             if run.steps >= max_steps:
-                _stop(run, RunStatus.LIMIT_REACHED, "step_limit")
+                _stop(run, RunStatus.LIMIT_REACHED, "step_limit", emit)
                 return run
             if run.model_calls >= max_model_calls:
-                _stop(run, RunStatus.LIMIT_REACHED, "model_call_limit")
+                _stop(run, RunStatus.LIMIT_REACHED, "model_call_limit", emit)
                 return run
 
             prompt = (
@@ -266,11 +309,11 @@ def run_agent(
                 if policy is not None
                 else _build_prompt(task, history, max_prompt_bytes)
             )
-            stop = _boundary_stop(run, cancelled, deadline)
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
             if prompt is None:
-                _stop(run, RunStatus.LIMIT_REACHED, "prompt_budget")
+                _stop(run, RunStatus.LIMIT_REACHED, "prompt_budget", emit)
                 return run
             response = _request_model(
                 run,
@@ -280,15 +323,16 @@ def run_agent(
                 deadline,
                 max_model_calls,
                 cancelled,
+                emit,
             )
             if isinstance(response, AgentRun):
                 return response
-            stop = _boundary_stop(run, cancelled, deadline)
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
 
             if isinstance(response, LlamaResponseTooLargeError):
-                _stop(run, RunStatus.LIMIT_REACHED, "model_output_limit")
+                _stop(run, RunStatus.LIMIT_REACHED, "model_output_limit", emit)
                 return run
 
             try:
@@ -297,22 +341,30 @@ def run_agent(
                 response_bytes = len(response.text.encode("utf-8", errors="replace"))
             run.steps += 1
             if response_bytes > max_model_response_bytes:
-                _stop(run, RunStatus.LIMIT_REACHED, "model_output_limit")
+                _stop(run, RunStatus.LIMIT_REACHED, "model_output_limit", emit)
                 return run
 
             action = parse_action(response.text)
             if isinstance(action, CompleteAction):
-                stop = _boundary_stop(run, cancelled, deadline)
+                stop = _boundary_stop(run, cancelled, deadline, emit)
                 if stop:
                     return stop
                 quality, rejection_reason = evaluate_verification(run, policy)
+                emit(
+                    RunEventType.VERIFICATION_RESULT,
+                    step=run.steps,
+                    data={
+                        "quality": quality.value,
+                        "rejection_reason": rejection_reason,
+                    },
+                )
                 if rejection_reason is not None:
                     run.verification_quality = quality
                     if no_progress_tracker.record_completion_rejection():
                         run.unresolved_issues.append(
                             f"Repeated unverified completion proposals rejected: {rejection_reason}"
                         )
-                        _stop(run, RunStatus.FAILED, "no_progress")
+                        _stop(run, RunStatus.FAILED, "no_progress", emit)
                         return run
                     history.append(
                         _exchange(
@@ -328,15 +380,15 @@ def run_agent(
                 no_progress_tracker.reset()
                 run.verification_quality = quality
                 run.final_response = action.summary
-                _stop(run, RunStatus.COMPLETED, "model_complete")
+                _stop(run, RunStatus.COMPLETED, "model_complete", emit)
                 return run
 
             if isinstance(action, ToolAction):
-                stop = _boundary_stop(run, cancelled, deadline)
+                stop = _boundary_stop(run, cancelled, deadline, emit)
                 if stop:
                     return stop
                 result = _execute_runtime_tool(
-                    run, action, root, policy, approve, cancelled, deadline
+                    run, action, root, policy, approve, cancelled, deadline, emit
                 )
                 if run.status in {
                     RunStatus.CANCELLED,
@@ -353,7 +405,7 @@ def run_agent(
                         run.unresolved_issues.append(
                             f"Repeated identical tool call without progress: {action.name}"
                         )
-                        _stop(run, RunStatus.LIMIT_REACHED, "no_progress")
+                        _stop(run, RunStatus.LIMIT_REACHED, "no_progress", emit)
                         return run
                 history.append(
                     _exchange(
@@ -366,7 +418,7 @@ def run_agent(
                     )
                 )
                 if invalid_streak >= max_consecutive_invalid_actions:
-                    _stop(run, RunStatus.LIMIT_REACHED, "invalid_action_limit")
+                    _stop(run, RunStatus.LIMIT_REACHED, "invalid_action_limit", emit)
                     return run
                 continue
 
@@ -388,7 +440,7 @@ def run_agent(
                 )
             )
             if invalid_streak >= max_consecutive_invalid_actions:
-                _stop(run, RunStatus.LIMIT_REACHED, "invalid_action_limit")
+                _stop(run, RunStatus.LIMIT_REACHED, "invalid_action_limit", emit)
                 return run
     except KeyboardInterrupt:
         if run.status not in {
@@ -396,8 +448,16 @@ def run_agent(
             RunStatus.FAILED,
             RunStatus.LIMIT_REACHED,
         }:
-            _stop(run, RunStatus.CANCELLED, "cancelled")
+            _stop(run, RunStatus.CANCELLED, "cancelled", emit)
         return run
+    finally:
+        if run.status not in {
+            RunStatus.COMPLETED,
+            RunStatus.FAILED,
+            RunStatus.CANCELLED,
+            RunStatus.LIMIT_REACHED,
+        }:
+            _stop(run, RunStatus.FAILED, "unexpected_exit", emit)
 
 
 def _execute_runtime_tool(
@@ -408,17 +468,28 @@ def _execute_runtime_tool(
     approve: Callable[[ApprovalRequest], bool] | None,
     cancelled: Callable[[], bool] | None,
     deadline: float,
+    emit: Callable[..., RunEvent] | None = None,
 ) -> dict[str, object]:
     """Delegate authorization/execution, then record audit data before stopping."""
     from harness.tools.dispatcher import execute_tool
 
+    if emit is not None:
+        emit(
+            RunEventType.TOOL_REQUESTED,
+            step=run.steps,
+            data={
+                "tool": action.name,
+                "arguments": action.arguments,
+            },
+        )
     approval_callback = (
         None
         if approve is None
         else lambda request: _request_approval(
-            run, approve, request, cancelled, deadline
+            run, approve, request, cancelled, deadline, emit
         )
     )
+    start_mono = monotonic()
     if policy is None:
         result = execute_tool(action, root)
     else:
@@ -429,6 +500,18 @@ def _execute_runtime_tool(
             approve=approval_callback,
             deadline=deadline,
             cancelled=cancelled,
+        )
+    duration_ms = (monotonic() - start_mono) * 1000.0
+    if emit is not None:
+        emit(
+            RunEventType.TOOL_RESULT,
+            step=run.steps,
+            duration_ms=duration_ms,
+            data={
+                "tool": action.name,
+                "ok": result.ok,
+                "error_code": result.error_code,
+            },
         )
     data = result.to_dict()
     if (
@@ -478,13 +561,13 @@ def _execute_runtime_tool(
         RunStatus.FAILED,
         RunStatus.LIMIT_REACHED,
     }:
-        _stop(run, RunStatus.CANCELLED, "cancelled")
+        _stop(run, RunStatus.CANCELLED, "cancelled", emit)
     if run.status not in {
         RunStatus.CANCELLED,
         RunStatus.FAILED,
         RunStatus.LIMIT_REACHED,
     }:
-        _boundary_stop(run, cancelled, deadline)
+        _boundary_stop(run, cancelled, deadline, emit)
     return data
 
 
@@ -494,24 +577,50 @@ def _request_approval(
     request: ApprovalRequest,
     cancelled: Callable[[], bool] | None,
     deadline: float,
+    emit: Callable[..., RunEvent] | None = None,
 ) -> bool:
     if approve is None:
         return False
     run.transition_to(RunStatus.WAITING_APPROVAL)
+    if emit is not None:
+        target_desc = request.target or request.path or str(request.root)
+        emit(
+            RunEventType.APPROVAL_REQUESTED,
+            step=run.steps,
+            data={
+                "tool": request.tool,
+                "target": target_desc,
+            },
+        )
     try:
         decision = approve(request)
     except KeyboardInterrupt:
-        _stop(run, RunStatus.CANCELLED, "cancelled")
+        _stop(run, RunStatus.CANCELLED, "cancelled", emit)
         return False
     except Exception:
-        run.transition_to(RunStatus.RUNNING)
+        if run.status is RunStatus.WAITING_APPROVAL:
+            run.transition_to(RunStatus.RUNNING)
+        if emit is not None:
+            emit(
+                RunEventType.APPROVAL_RESOLVED,
+                step=run.steps,
+                data={"approved": False},
+            )
         return False
-    if run.status is not RunStatus.WAITING_APPROVAL:
+    finally:
+        if run.status is RunStatus.WAITING_APPROVAL:
+            run.transition_to(RunStatus.RUNNING)
+
+    approved = decision is True
+    if emit is not None:
+        emit(
+            RunEventType.APPROVAL_RESOLVED,
+            step=run.steps,
+            data={"approved": approved},
+        )
+    if _boundary_stop(run, cancelled, deadline, emit):
         return False
-    run.transition_to(RunStatus.RUNNING)
-    if _boundary_stop(run, cancelled, deadline):
-        return False
-    return decision is True
+    return approved
 
 
 def _request_model(
@@ -522,72 +631,162 @@ def _request_model(
     deadline: float,
     max_model_calls: int,
     cancelled: Callable[[], bool] | None,
+    emit: Callable[..., RunEvent] | None = None,
 ) -> ChatResponse | LlamaResponseTooLargeError | AgentRun:
     retried = False
     while True:
-        stop = _boundary_stop(run, cancelled, deadline)
+        stop = _boundary_stop(run, cancelled, deadline, emit)
         if stop:
             return stop
         if run.model_calls >= max_model_calls:
-            _stop(run, RunStatus.LIMIT_REACHED, "model_call_limit")
+            _stop(run, RunStatus.LIMIT_REACHED, "model_call_limit", emit)
             return run
         remaining = deadline - monotonic()
         if remaining <= 0:
-            stop = _boundary_stop(run, cancelled, deadline)
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
-            _stop(run, RunStatus.LIMIT_REACHED, "run_timeout")
+            _stop(run, RunStatus.LIMIT_REACHED, "run_timeout", emit)
             return run
         timeout = min(request_timeout, remaining)
         run.model_calls += 1
+        prompt_bytes = len(prompt.encode("utf-8"))
+        if emit is not None:
+            emit(
+                RunEventType.MODEL_REQUEST,
+                step=run.steps,
+                data={
+                    "prompt_bytes": prompt_bytes,
+                    "model_call": run.model_calls,
+                    "timeout": timeout,
+                },
+            )
+        start_mono = monotonic()
         try:
-            return model(prompt, timeout=timeout)
+            resp = model(prompt, timeout=timeout)
+            duration_ms = (monotonic() - start_mono) * 1000.0
+            if resp.prompt_tokens is not None:
+                if run.total_prompt_tokens is None:
+                    run.total_prompt_tokens = 0
+                run.total_prompt_tokens += resp.prompt_tokens
+            if resp.completion_tokens is not None:
+                if run.total_completion_tokens is None:
+                    run.total_completion_tokens = 0
+                run.total_completion_tokens += resp.completion_tokens
+            if (
+                run.total_prompt_tokens is not None
+                or run.total_completion_tokens is not None
+            ):
+                run.total_tokens = (run.total_prompt_tokens or 0) + (
+                    run.total_completion_tokens or 0
+                )
+            resp_bytes = len(resp.text.encode("utf-8", errors="replace"))
+            if emit is not None:
+                emit(
+                    RunEventType.MODEL_RESPONSE,
+                    step=run.steps,
+                    duration_ms=duration_ms,
+                    data={
+                        "prompt_tokens": resp.prompt_tokens,
+                        "completion_tokens": resp.completion_tokens,
+                        "total_tokens": resp.total_tokens,
+                        "response_bytes": resp_bytes,
+                    },
+                )
+            return resp
         except LlamaResponseTooLargeError as error:
-            stop = _boundary_stop(run, cancelled, deadline)
+            duration_ms = (monotonic() - start_mono) * 1000.0
+            if emit is not None:
+                emit(
+                    RunEventType.MODEL_ERROR,
+                    step=run.steps,
+                    duration_ms=duration_ms,
+                    data={
+                        "error_type": "LlamaResponseTooLargeError",
+                        "message": str(error),
+                    },
+                )
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
             return error
-        except LlamaTimeoutError:
-            stop = _boundary_stop(run, cancelled, deadline)
+        except LlamaTimeoutError as error:
+            duration_ms = (monotonic() - start_mono) * 1000.0
+            if emit is not None:
+                emit(
+                    RunEventType.MODEL_ERROR,
+                    step=run.steps,
+                    duration_ms=duration_ms,
+                    data={
+                        "error_type": "LlamaTimeoutError",
+                        "message": str(error),
+                    },
+                )
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
             if not retried:
                 retried = True
                 continue
-            _stop(run, RunStatus.FAILED, "model_timeout")
+            _stop(run, RunStatus.FAILED, "model_timeout", emit)
             return run
-        except LlamaTransportError:
-            stop = _boundary_stop(run, cancelled, deadline)
+        except LlamaTransportError as error:
+            duration_ms = (monotonic() - start_mono) * 1000.0
+            if emit is not None:
+                emit(
+                    RunEventType.MODEL_ERROR,
+                    step=run.steps,
+                    duration_ms=duration_ms,
+                    data={
+                        "error_type": "LlamaTransportError",
+                        "message": str(error),
+                    },
+                )
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
             if not retried:
                 retried = True
                 continue
-            _stop(run, RunStatus.FAILED, "model_error")
+            _stop(run, RunStatus.FAILED, "model_error", emit)
             return run
-        except LlamaClientError:
-            stop = _boundary_stop(run, cancelled, deadline)
+        except LlamaClientError as error:
+            duration_ms = (monotonic() - start_mono) * 1000.0
+            if emit is not None:
+                emit(
+                    RunEventType.MODEL_ERROR,
+                    step=run.steps,
+                    duration_ms=duration_ms,
+                    data={
+                        "error_type": "LlamaClientError",
+                        "message": str(error),
+                    },
+                )
+            stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
-            _stop(run, RunStatus.FAILED, "model_error")
+            _stop(run, RunStatus.FAILED, "model_error", emit)
             return run
         except KeyboardInterrupt:
-            _stop(run, RunStatus.CANCELLED, "cancelled")
+            _stop(run, RunStatus.CANCELLED, "cancelled", emit)
             return run
 
 
 def _boundary_stop(
-    run: AgentRun, cancelled: Callable[[], bool] | None, deadline: float
+    run: AgentRun,
+    cancelled: Callable[[], bool] | None,
+    deadline: float,
+    emit: Callable[..., RunEvent] | None = None,
 ) -> AgentRun | None:
     try:
         if cancelled is not None and cancelled():
-            _stop(run, RunStatus.CANCELLED, "cancelled")
+            _stop(run, RunStatus.CANCELLED, "cancelled", emit)
             return run
     except KeyboardInterrupt:
-        _stop(run, RunStatus.CANCELLED, "cancelled")
+        _stop(run, RunStatus.CANCELLED, "cancelled", emit)
         return run
     if monotonic() >= deadline:
-        _stop(run, RunStatus.LIMIT_REACHED, "run_timeout")
+        _stop(run, RunStatus.LIMIT_REACHED, "run_timeout", emit)
         return run
     return None
 
@@ -604,6 +803,7 @@ def _validate_invocation(
     max_prompt_bytes: int,
     max_model_response_bytes: int,
     cancelled: Callable[[], bool] | None,
+    on_event: Callable[[RunEvent], None] | None = None,
 ) -> Path:
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-blank string")
@@ -645,12 +845,68 @@ def _validate_invocation(
             raise ValueError(f"{name} must be a finite positive number")
     if cancelled is not None and not callable(cancelled):
         raise ValueError("cancelled must be callable or None")
+    if on_event is not None and not callable(on_event):
+        raise ValueError("on_event must be callable or None")
     return root
 
 
-def _stop(run: AgentRun, status: RunStatus, reason: str) -> None:
+def _stop(
+    run: AgentRun,
+    status: RunStatus,
+    reason: str,
+    emit: Callable[..., RunEvent] | None = None,
+) -> None:
+    if run.status in {
+        RunStatus.COMPLETED,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+        RunStatus.LIMIT_REACHED,
+    }:
+        return
     run.stop_reason = reason
     run.transition_to(status)
+    run.end_time = time.time()
+    if run.start_time is not None:
+        run.duration_seconds = max(0.0, run.end_time - run.start_time)
+
+    if status == RunStatus.COMPLETED:
+        run.benchmark_outcome = BenchmarkOutcome.NOT_EVALUATED
+    elif status == RunStatus.LIMIT_REACHED:
+        if reason in {"run_timeout", "model_timeout"}:
+            run.benchmark_outcome = BenchmarkOutcome.TIMEOUT
+        else:
+            run.benchmark_outcome = BenchmarkOutcome.UNRESOLVED
+    elif status == RunStatus.CANCELLED:
+        run.benchmark_outcome = BenchmarkOutcome.UNRESOLVED
+    elif status == RunStatus.FAILED:
+        if reason in {"model_error", "model_timeout", "no_progress"}:
+            run.benchmark_outcome = BenchmarkOutcome.AGENT_ERROR
+        else:
+            run.benchmark_outcome = BenchmarkOutcome.UNRESOLVED
+
+    if emit is not None:
+        if status == RunStatus.LIMIT_REACHED:
+            emit(RunEventType.BUDGET_EXCEEDED, step=run.steps, data={"reason": reason})
+        elif status == RunStatus.CANCELLED:
+            emit(RunEventType.CANCELLED, step=run.steps, data={"reason": reason})
+
+        emit(
+            RunEventType.RUN_FINISHED,
+            step=run.steps,
+            data={
+                "status": run.status.value,
+                "stop_reason": run.stop_reason,
+                "steps": run.steps,
+                "model_calls": run.model_calls,
+                "duration_seconds": run.duration_seconds,
+                "benchmark_outcome": (
+                    run.benchmark_outcome.value if run.benchmark_outcome else None
+                ),
+                "total_prompt_tokens": run.total_prompt_tokens,
+                "total_completion_tokens": run.total_completion_tokens,
+                "total_tokens": run.total_tokens,
+            },
+        )
 
 
 def _exchange(action: object, observation: object) -> str:
