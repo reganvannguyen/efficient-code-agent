@@ -8,3 +8,13 @@ __pycache__/
 # Local model weights are large and must stay out of Git.
 /models/
 *.gguf
+
+# Run traces, SQLite databases, and local evaluation artifacts
+.runs/
+artifacts/
+*.db
+*.sqlite
+*.sqlite3
+.env*
+uv.lock
+
