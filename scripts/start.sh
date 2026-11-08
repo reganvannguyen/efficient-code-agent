@@ -21,7 +21,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 1. Check if server is already responding
-if curl -s "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
+if curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     echo "Local llama-server is already running on port $PORT."
 else
     if [ ! -x "$SERVER_BIN" ]; then
@@ -40,7 +40,7 @@ else
 
     echo "Waiting for model to load..."
     RETRIES=30
-    until curl -s "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; do
+    until curl -sf "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; do
         sleep 1
         RETRIES=$((RETRIES - 1))
         if [ "$RETRIES" -le 0 ]; then

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import subprocess
 import sys
 from functools import partial
 from pathlib import Path
@@ -18,6 +19,7 @@ from harness.agent.runtime import (
 )
 from harness.agent.state import RunStatus
 from harness.llama_client import ChatResponse, LlamaClientError, chat
+from harness.storage.database import SqliteRunRecorder
 from harness.tools.policy import ApprovalRequest, ToolMode, ToolPolicy
 
 
@@ -50,6 +52,17 @@ def main(argv: list[str] | None = None) -> None:
     run_parser.add_argument("--auto-approve", action="store_true")
     run_parser.add_argument("--test-target", action="append", default=None)
     run_parser.add_argument("--test-timeout", type=float, default=None)
+    run_parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=Path(".runs/traces.db"),
+        help="path to SQLite database for run traces",
+    )
+    run_parser.add_argument(
+        "--no-db",
+        action="store_true",
+        help="disable SQLite trace persistence",
+    )
     args = parser.parse_args(args_list)
     if args.command == "run":
         _run(args, parser)
@@ -126,6 +139,32 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         response_schema=action_schema(policy),
         system_prompt=prompt,
     )
+    manifest: dict[str, object] = {
+        "base_url": args.base_url,
+        "model": args.model,
+        "timeout": args.timeout,
+        "run_timeout": args.run_timeout,
+        "max_tokens": args.max_tokens,
+        "max_model_calls": args.max_model_calls,
+        "max_steps": args.max_steps,
+        "coding": args.coding,
+        "auto_approve": args.auto_approve,
+    }
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=args.repo,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+        manifest["git_commit"] = commit
+    except Exception:
+        pass
+
+    recorder = None
+    if not args.no_db:
+        recorder = SqliteRunRecorder(db_path=args.db_path)
+
     try:
         run = run_agent(
             args.task,
@@ -138,6 +177,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             max_prompt_bytes=DEFAULT_MAX_PROMPT_BYTES - len(prompt.encode("utf-8")),
             policy=policy,
             approve=approve,
+            recorder=recorder,
+            manifest=manifest,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -160,6 +201,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         file=sys.stderr,
     )
     print(f"harness: run_id={run.run_id}", file=sys.stderr)
+    if not args.no_db:
+        print(f"harness: db={args.db_path}", file=sys.stderr)
     if run.benchmark_outcome is not None:
         print(
             f"harness: benchmark_outcome={run.benchmark_outcome.value}", file=sys.stderr

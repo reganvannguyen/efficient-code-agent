@@ -159,9 +159,9 @@ Create a measurable baseline **before** introducing retrieval or memory optimiza
 ### Implementation tasks
 
 - [x] Define structured run/step events and stable outcome labels.
-- [ ] Record model calls, input/output tokens, tool calls, context size, wall time, and verification results.
-- [ ] Add SQLite for structured traces and metrics where useful; keep the runtime independent of its persistence backend.
-- [ ] Save run-specific patches, logs, and configuration metadata.
+- [x] Record model calls, input/output tokens, tool calls, context size, wall time, and verification results.
+- [x] Add SQLite for structured traces and metrics where useful; keep the runtime independent of its persistence backend.
+- [x] Save run-specific patches, logs, and configuration metadata.
 - [ ] Build a fixture-based evaluation runner with clean checkout and separate evaluation workspace.
 - [ ] Establish a documented macOS memory measurement procedure.
 - [ ] Select five feasible real benchmark tasks for smoke testing; document selection and exclusions.
@@ -170,8 +170,8 @@ Create a measurable baseline **before** introducing retrieval or memory optimiza
 
 ### Tests
 
-- [ ] Each run has a unique ID and complete terminal outcome.
-- [ ] Model/tool failures are recorded rather than silently discarded.
+- [x] Each run has a unique ID and complete terminal outcome.
+- [x] Model/tool failures are recorded rather than silently discarded.
 - [ ] A candidate patch is evaluated against a clean task snapshot.
 - [ ] Setup failures are distinguished from unresolved coding tasks.
 - [ ] Re-running the same fixture does not reuse prior edits or working memory.

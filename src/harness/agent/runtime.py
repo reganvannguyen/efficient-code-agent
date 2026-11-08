@@ -26,6 +26,7 @@ from harness.llama_client import (
     LlamaTransportError,
     chat,
 )
+from harness.storage.recorder import LoggingPolicy, RunRecorder
 from harness.tools.policy import (
     ApprovalRequest,
     ToolMode,
@@ -214,6 +215,8 @@ def run_agent(
     policy: ToolPolicy | None = None,
     approve: Callable[[ApprovalRequest], bool] | None = None,
     on_event: Callable[[RunEvent], None] | None = None,
+    recorder: RunRecorder | None = None,
+    manifest: dict[str, object] | None = None,
 ) -> AgentRun:
     """Run a cooperative, bounded tool loop for one repository task.
 
@@ -233,6 +236,7 @@ def run_agent(
         max_model_response_bytes,
         cancelled,
         on_event,
+        recorder,
     )
     if policy is not None:
         from harness.tools.testing import validate_test_policy
@@ -266,12 +270,25 @@ def run_agent(
             data=data,
         )
         run.events.append(event)
+        if recorder is not None:
+            try:
+                recorder.on_event(event)
+            except Exception:
+                if getattr(recorder, "policy", None) == LoggingPolicy.FAIL:
+                    raise
         if on_event is not None:
             try:
                 on_event(event)
             except Exception:
                 pass
         return event
+
+    if recorder is not None:
+        try:
+            recorder.on_run_started(run, manifest=manifest)
+        except Exception:
+            if getattr(recorder, "policy", None) == LoggingPolicy.FAIL:
+                raise
 
     emit(
         RunEventType.RUN_STARTED,
@@ -458,6 +475,12 @@ def run_agent(
             RunStatus.LIMIT_REACHED,
         }:
             _stop(run, RunStatus.FAILED, "unexpected_exit", emit)
+        if recorder is not None:
+            try:
+                recorder.on_run_finished(run)
+            except Exception:
+                if getattr(recorder, "policy", None) == LoggingPolicy.FAIL:
+                    raise
 
 
 def _execute_runtime_tool(
@@ -804,6 +827,7 @@ def _validate_invocation(
     max_model_response_bytes: int,
     cancelled: Callable[[], bool] | None,
     on_event: Callable[[RunEvent], None] | None = None,
+    recorder: RunRecorder | None = None,
 ) -> Path:
     if not isinstance(task, str) or not task.strip():
         raise ValueError("task must be a non-blank string")
@@ -847,6 +871,8 @@ def _validate_invocation(
         raise ValueError("cancelled must be callable or None")
     if on_event is not None and not callable(on_event):
         raise ValueError("on_event must be callable or None")
+    if recorder is not None and not isinstance(recorder, RunRecorder):
+        raise ValueError("recorder must implement RunRecorder protocol")
     return root
 
 
