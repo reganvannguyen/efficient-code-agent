@@ -1,5 +1,6 @@
 """Agent runtime state and model action protocol."""
 
+from harness.agent.events import BenchmarkOutcome, RunEvent, RunEventType
 from harness.agent.protocol import (
     Action,
     CompleteAction,
@@ -18,9 +19,12 @@ from harness.agent.verification import (
 __all__ = [
     "Action",
     "AgentRun",
+    "BenchmarkOutcome",
     "CompleteAction",
     "InvalidAction",
     "NoProgressTracker",
+    "RunEvent",
+    "RunEventType",
     "RunStatus",
     "ToolAction",
     "VerificationQuality",

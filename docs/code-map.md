@@ -90,13 +90,14 @@ flowchart LR
 | --- | --- |
 | [`src/harness/__init__.py`](../src/harness/__init__.py) | Package docstring; no runtime behavior. |
 | [`src/harness/__main__.py`](../src/harness/__main__.py) | Calls `harness.cli.main()` so `python -m harness` works. |
-| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses `chat`, default read-only `run`, and opt-in `run --coding` options; binds profile-specific system prompts and copied schemas; asks for approval only on interactive stdin/stderr or enables AUTO with explicit `--auto-approve`; reports changed paths, test outcomes, verification quality, candidate diff, and unresolved issues to stderr. |
+| [`src/harness/cli.py`](../src/harness/cli.py) | Starts the interactive loop with no arguments; parses `chat`, default read-only `run`, and opt-in `run --coding` options; binds profile-specific system prompts and copied schemas; asks for approval only on interactive stdin/stderr or enables AUTO with explicit `--auto-approve`; reports run ID, benchmark outcome, token usage, changed paths, test outcomes, verification quality, candidate diff, and unresolved issues to stderr. |
 | [`src/harness/llama_client.py`](../src/harness/llama_client.py) | Builds the llama.cpp chat request, optionally prepends a system message and forwards a JSON response schema, sends it with `urllib`, reads at most 1 MiB plus a sentinel, classifies transport/timeouts and oversized bodies, validates/parses JSON, and normalizes available usage counts. |
-| [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, verification quality, no-progress tracker, and `run_agent`. |
-| [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses including approval wait, mutable `AgentRun` counters and stop reason, confirmed `changed_paths`, latest bounded `last_tool_result` and `last_test_result`, `last_write_state`, verification quality, candidate diff, test invocations, unresolved issues, edit/test step indices, and permitted state transitions. |
+| [`src/harness/agent/__init__.py`](../src/harness/agent/__init__.py) | Exports the agent run state, normalized action protocol types and parser, verification quality, no-progress tracker, run events (`RunEvent`, `RunEventType`, `BenchmarkOutcome`), and `run_agent`. |
+| [`src/harness/agent/events.py`](../src/harness/agent/events.py) | Defines the structured `RunEventType` enum, stable `BenchmarkOutcome` taxonomy, and frozen `RunEvent` dataclass with sequence, timestamp, duration, and serialization helpers. |
+| [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses including approval wait, mutable `AgentRun` with unique UUID4 `run_id`, `events`, `benchmark_outcome`, token counters (`total_prompt_tokens`, `total_completion_tokens`, `total_tokens`), wall-clock timestamps and duration, counters and stop reason, confirmed `changed_paths`, latest bounded `last_tool_result` and `last_test_result`, `last_write_state`, verification quality, candidate diff, test invocations, unresolved issues, edit/test step indices, and permitted state transitions. |
 | [`src/harness/agent/verification.py`](../src/harness/agent/verification.py) | Defines `VerificationQuality` (`verified`, `partially_verified`, `unverified`), `NoProgressTracker` for repeated identical tool actions and rejected completions, and `evaluate_verification` to enforce post-edit passing test requirements. |
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
-| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines read-only and coding system prompts, read-only schema and per-run `action_schema(policy)`; pins profile-specific tool instructions; validates model/runtime limits, tracks approval wait transitions, delegates policy decisions to the dispatcher, checks post-edit passing tests and no-progress repetitions, records candidate diffs, retries one typed transport failure, and runs within independent budgets. |
+| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines read-only and coding system prompts, read-only schema and per-run `action_schema(policy)`; pins profile-specific tool instructions; validates model/runtime limits and `on_event` callback, tracks approval wait transitions, delegates policy decisions to the dispatcher, checks post-edit passing tests and no-progress repetitions, records candidate diffs, retries one typed transport failure, streams structured run events, accumulates token metrics, and runs within independent budgets. |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
 | [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type and `execute_tool(...)`; validates exact schemas before workspace access, retains the legacy `allow_edits=True` path only without policy, and owns edit/test AUTO/ASK/DENY checks, approval metadata, target revalidation, and dispatch. |
 | [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks; successful reads include the SHA-256 of complete file bytes for edit preconditions. |
@@ -113,7 +114,11 @@ flowchart LR
 0, model_calls: int = 0, final_response: str | None = None, stop_reason: str |
 None = None, changed_paths: list[str] = [], last_tool_result: dict | None =
 None, last_write_state: str | None = None, last_test_result: dict | None =
-None)` is mutable; `changed_paths` uses a per-instance list factory.
+None, run_id: str = ..., events: list[RunEvent] = [], benchmark_outcome: BenchmarkOutcome | None = None,
+total_prompt_tokens: int | None = None, total_completion_tokens: int | None = None,
+total_tokens: int | None = None, start_time: float = ..., end_time: float | None = None,
+duration_seconds: float | None = None)` is mutable; `changed_paths` and `events` use per-instance list factories.
+`run_id` defaults to a fresh UUID4 string.
 `transition_to(status: RunStatus) -> None` permits `PENDING → RUNNING`,
 `RUNNING → WAITING_APPROVAL` or a terminal state, and
 `WAITING_APPROVAL → RUNNING`, `FAILED`, `LIMIT_REACHED`, or `CANCELLED`.
@@ -128,7 +133,10 @@ chat, max_model_calls: int = 20, max_steps: int = 20,
 max_consecutive_invalid_actions: int = 3, request_timeout: float = 120,
 run_timeout: float = 300, max_prompt_bytes: int = 24576,
 max_model_response_bytes: int = 65536,
-cancelled: Callable[[], bool] | None = None) -> AgentRun` requires a nonblank
+cancelled: Callable[[], bool] | None = None,
+policy: ToolPolicy | None = None,
+approve: Callable[[ApprovalRequest], bool] | None = None,
+on_event: Callable[[RunEvent], None] | None = None) -> AgentRun` requires a nonblank
 task, an existing canonical workspace directory, a model accepting
 `model(prompt, *, timeout=seconds)`, positive integer budgets and finite
 positive timeouts (booleans rejected), and an optional cancellation callback.

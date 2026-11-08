@@ -158,7 +158,7 @@ Create a measurable baseline **before** introducing retrieval or memory optimiza
 
 ### Implementation tasks
 
-- [ ] Define structured run/step events and stable outcome labels.
+- [x] Define structured run/step events and stable outcome labels.
 - [ ] Record model calls, input/output tokens, tool calls, context size, wall time, and verification results.
 - [ ] Add SQLite for structured traces and metrics where useful; keep the runtime independent of its persistence backend.
 - [ ] Save run-specific patches, logs, and configuration metadata.

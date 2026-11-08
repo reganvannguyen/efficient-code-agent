@@ -159,6 +159,18 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         f"steps={run.steps}{verification}",
         file=sys.stderr,
     )
+    print(f"harness: run_id={run.run_id}", file=sys.stderr)
+    if run.benchmark_outcome is not None:
+        print(
+            f"harness: benchmark_outcome={run.benchmark_outcome.value}", file=sys.stderr
+        )
+    if run.total_tokens is not None:
+        print(
+            f"harness: tokens=prompt:{run.total_prompt_tokens or 0},"
+            f"completion:{run.total_completion_tokens or 0},"
+            f"total:{run.total_tokens}",
+            file=sys.stderr,
+        )
     print(f"harness: verification={run.verification_quality.value}", file=sys.stderr)
     if run.changed_paths:
         print(f"harness: changed_paths={','.join(run.changed_paths)}", file=sys.stderr)
