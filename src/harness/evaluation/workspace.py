@@ -167,22 +167,3 @@ def restore_paths(
         raise EvaluationSetupError(
             f"Failed to restore oracle paths {targets!r}: {detail}"
         )
-
-
-def restore_paths(
-    workspace: Path,
-    paths: tuple[str, ...],
-    *,
-    timeout: float = 30.0,
-) -> None:
-    """Restore oracle test paths to HEAD so candidate patches cannot alter the oracle."""
-    targets = [p for p in paths if p and p != "."]
-    if not targets:
-        return
-    proc = _run_git(
-        ["-C", str(workspace), "checkout", "HEAD", "--", *targets],
-        timeout=timeout,
-    )
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip()
-        raise EvaluationSetupError(f"Failed to restore oracle paths {targets!r}: {detail}")

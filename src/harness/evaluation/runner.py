@@ -18,7 +18,9 @@ from harness.agent.runtime import (
     run_agent,
 )
 from harness.agent.state import AgentRun, RunStatus
+from harness.evaluation.config import ExperimentConfig
 from harness.evaluation.manifest import OracleTier, TaskManifest
+from harness.evaluation.resources import MemorySnapshot, sample_macos_memory
 from harness.evaluation.workspace import (
     EvaluationSetupError,
     PatchApplyError,
@@ -48,6 +50,9 @@ class EvaluationResult:
     error_detail: str | None = None
     agent_status: RunStatus | None = None
     artifacts: RunArtifacts | None = None
+    experiment_config: ExperimentConfig | None = None
+    memory_before: MemorySnapshot | None = None
+    memory_after: MemorySnapshot | None = None
 
 
 def _default_agent_policy(manifest: TaskManifest) -> ToolPolicy:
@@ -107,18 +112,30 @@ def _write_artifacts_if_configured(
     artifacts_root: Path | None,
     run: AgentRun,
     manifest: TaskManifest,
+    *,
+    experiment_config: ExperimentConfig | None = None,
+    memory_before: MemorySnapshot | None = None,
+    memory_after: MemorySnapshot | None = None,
 ) -> RunArtifacts | None:
     if artifacts_root is None:
         return None
+    manifest_payload: dict[str, object] = {
+        "task_id": manifest.task_id,
+        "repo": manifest.repo,
+        "base_commit": manifest.base_commit,
+        "oracle_tier": manifest.oracle_tier.value,
+    }
+    if experiment_config is not None:
+        manifest_payload["experiment_config"] = experiment_config.to_dict()
+    if memory_before is not None or memory_after is not None:
+        manifest_payload["resources"] = {
+            "memory_before": memory_before.to_dict() if memory_before else None,
+            "memory_after": memory_after.to_dict() if memory_after else None,
+        }
     return write_run_artifacts(
         artifacts_root / run.run_id,
         run,
-        manifest={
-            "task_id": manifest.task_id,
-            "repo": manifest.repo,
-            "base_commit": manifest.base_commit,
-            "oracle_tier": manifest.oracle_tier.value,
-        },
+        manifest=manifest_payload,
     )
 
 
@@ -137,6 +154,9 @@ def evaluate_task(
     oracle_timeout: float = 60.0,
     setup_timeout: float = 120.0,
     cleanup_workspaces: bool = True,
+    experiment_config: ExperimentConfig | None = None,
+    server_pid: int | None = None,
+    collect_memory: bool = True,
 ) -> EvaluationResult:
     """Run one task in a fresh agent checkout and grade its patch in a separate checkout."""
     trial_dir = work_root / f"{manifest.task_id}_{uuid.uuid4().hex[:8]}"
@@ -166,6 +186,17 @@ def evaluate_task(
         effective_policy = (
             policy if policy is not None else _default_agent_policy(manifest)
         )
+        memory_before = (
+            sample_macos_memory(server_pid=server_pid) if collect_memory else None
+        )
+        run_manifest: dict[str, object] = {
+            "task_id": manifest.task_id,
+            "base_commit": manifest.base_commit,
+            "oracle_tier": manifest.oracle_tier.value,
+        }
+        if experiment_config is not None:
+            run_manifest["experiment_config"] = experiment_config.to_dict()
+
         run = run_agent(
             manifest.agent_prompt(),
             agent_workspace,
@@ -176,18 +207,27 @@ def evaluate_task(
             run_timeout=run_timeout,
             policy=effective_policy,
             recorder=recorder,
-            manifest={
-                "task_id": manifest.task_id,
-                "base_commit": manifest.base_commit,
-                "oracle_tier": manifest.oracle_tier.value,
-            },
+            manifest=run_manifest,
         )
+        memory_after = (
+            sample_macos_memory(server_pid=server_pid) if collect_memory else None
+        )
+
+        def _artifacts() -> RunArtifacts | None:
+            return _write_artifacts_if_configured(
+                artifacts_root,
+                run,
+                manifest,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
+            )
 
         try:
             candidate_patch = capture_workspace_patch(agent_workspace)
         except EvaluationSetupError as exc:
             run.benchmark_outcome = BenchmarkOutcome.SETUP_ERROR
-            artifacts = _write_artifacts_if_configured(artifacts_root, run, manifest)
+            artifacts = _artifacts()
             return EvaluationResult(
                 task_id=manifest.task_id,
                 run_id=run.run_id,
@@ -198,11 +238,14 @@ def evaluate_task(
                 error_detail=str(exc),
                 agent_status=run.status,
                 artifacts=artifacts,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
             )
 
         if run.status in (RunStatus.FAILED, RunStatus.CANCELLED):
             run.benchmark_outcome = BenchmarkOutcome.AGENT_ERROR
-            artifacts = _write_artifacts_if_configured(artifacts_root, run, manifest)
+            artifacts = _artifacts()
             return EvaluationResult(
                 task_id=manifest.task_id,
                 run_id=run.run_id,
@@ -213,6 +256,9 @@ def evaluate_task(
                 error_detail=run.stop_reason,
                 agent_status=run.status,
                 artifacts=artifacts,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
             )
 
         if not candidate_patch.strip():
@@ -222,7 +268,7 @@ def evaluate_task(
                 else BenchmarkOutcome.UNRESOLVED
             )
             run.benchmark_outcome = outcome
-            artifacts = _write_artifacts_if_configured(artifacts_root, run, manifest)
+            artifacts = _artifacts()
             return EvaluationResult(
                 task_id=manifest.task_id,
                 run_id=run.run_id,
@@ -233,6 +279,9 @@ def evaluate_task(
                 error_detail=run.stop_reason or "Agent produced no changes.",
                 agent_status=run.status,
                 artifacts=artifacts,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
             )
 
         try:
@@ -245,7 +294,7 @@ def evaluate_task(
             )
         except EvaluationSetupError as exc:
             run.benchmark_outcome = BenchmarkOutcome.SETUP_ERROR
-            artifacts = _write_artifacts_if_configured(artifacts_root, run, manifest)
+            artifacts = _artifacts()
             return EvaluationResult(
                 task_id=manifest.task_id,
                 run_id=run.run_id,
@@ -256,13 +305,16 @@ def evaluate_task(
                 error_detail=str(exc),
                 agent_status=run.status,
                 artifacts=artifacts,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
             )
 
         try:
             apply_patch(eval_workspace, candidate_patch)
         except PatchApplyError as exc:
             run.benchmark_outcome = BenchmarkOutcome.UNRESOLVED
-            artifacts = _write_artifacts_if_configured(artifacts_root, run, manifest)
+            artifacts = _artifacts()
             return EvaluationResult(
                 task_id=manifest.task_id,
                 run_id=run.run_id,
@@ -273,6 +325,9 @@ def evaluate_task(
                 error_detail=str(exc),
                 agent_status=run.status,
                 artifacts=artifacts,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
             )
 
         try:
@@ -284,7 +339,7 @@ def evaluate_task(
             )
         except EvaluationSetupError as exc:
             run.benchmark_outcome = BenchmarkOutcome.SETUP_ERROR
-            artifacts = _write_artifacts_if_configured(artifacts_root, run, manifest)
+            artifacts = _artifacts()
             return EvaluationResult(
                 task_id=manifest.task_id,
                 run_id=run.run_id,
@@ -295,6 +350,9 @@ def evaluate_task(
                 error_detail=str(exc),
                 agent_status=run.status,
                 artifacts=artifacts,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
             )
 
         if oracle_passed:
@@ -305,7 +363,7 @@ def evaluate_task(
             outcome = BenchmarkOutcome.UNRESOLVED
 
         run.benchmark_outcome = outcome
-        artifacts = _write_artifacts_if_configured(artifacts_root, run, manifest)
+        artifacts = _artifacts()
         return EvaluationResult(
             task_id=manifest.task_id,
             run_id=run.run_id,
@@ -316,6 +374,9 @@ def evaluate_task(
             oracle_output=oracle_output,
             agent_status=run.status,
             artifacts=artifacts,
+            experiment_config=experiment_config,
+            memory_before=memory_before,
+            memory_after=memory_after,
         )
     finally:
         if cleanup_workspaces and trial_dir.exists():

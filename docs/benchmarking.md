@@ -119,6 +119,13 @@ A **quantized 7B coding model** is a reasonable candidate to test, but model sel
 
 Run harness conditions **sequentially** against the same local inference configuration, not with multiple large models loaded concurrently. If model servers are restarted between runs, apply the same restart policy to all conditions.
 
+### macOS memory measurement procedure
+
+- **Baseline context capacity:** Start at **8K** (`context_window=8192`). Do not assume 16K is safe on a 16 GB MacBook Air without testing memory pressure and swap first.
+- **Pin configuration:** Capture `ExperimentConfig` (`ModelSpec` with GGUF filename/SHA-256/quantization, `llama.cpp` version/args, sampling settings, and `git` commit) in each run's `manifest.json`.
+- **Sampling method:** `sample_macos_memory(server_pid=...)` records before/after snapshots using `sysctl vm.swapusage` (swap used/total), `memory_pressure -Q` (`normal`/`warn`/`critical`), and `ps -o rss= -p <pid>` (`llama-server` RSS).
+- **Limitations and honesty:** Subprocess probes introduce small measurement overhead and point-in-time uncertainty (they are not continuous kernel page-table traces). Missing or unavailable metrics remain `None` and are never estimated. Fewer prompt tokens do **not** imply lower peak KV-cache RAM when `llama-server` pre-allocates KV cache for the configured context window.
+
 ## 6. Task selection and dataset hygiene
 
 A lightweight subset should be selected using **documented, reproducible criteria**, not by choosing tasks our harness already solves.
