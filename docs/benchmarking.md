@@ -173,6 +173,8 @@ flowchart TD
 
 Never run untrusted benchmark tests with broad host permissions. On macOS, prefer isolated environments and explicit command allowlists. Python virtual environments isolate dependencies, **not** malicious code. Docker/VM isolation may still be required for untrusted workloads.
 
+**Trusted-fixture policy:** The local evaluation runner (`harness.evaluation`) executes `setup_commands` and `pytest` oracle targets directly on the host inside temporary checkouts. Use this local runner only for trusted fixtures and vetted repositories; untrusted external benchmark projects require container or VM isolation before running setup scripts or test suites.
+
 ## 8. Verification and success criteria
 
 **Three distinct outcomes:** (1) the model proposes completion, (2) the runtime accepts or rejects that proposal under its verification policy, and (3) an independent benchmark oracle determines task resolution. Only the third establishes benchmark success. A runtime `COMPLETED` status does not imply a resolved benchmark task.
