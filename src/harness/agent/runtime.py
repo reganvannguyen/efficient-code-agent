@@ -78,7 +78,8 @@ _NEXT_ACTION = """Choose the next executable action now. For path-only questions
 _CONTEXT_EDIT_INSTRUCTIONS = """
 Optional working-notes tool (use only when an important finding, disproven hypothesis, or plan change warrants it — do not call after every step):
 {"kind":"tool","name":"update_context","arguments":{"operation":"replace","target":"working.md","content":"..."}}
-Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. Working-note edits cannot change the original task or safety policy."""
+Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. Working-note edits cannot change the original task or safety policy.
+For greetings or conversational messages that do not ask about repository files, reply directly using {"kind":"complete","summary":"..."} without calling repository tools."""
 READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
     "type": "object",
     "oneOf": [

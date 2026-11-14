@@ -7,6 +7,7 @@ import json
 import math
 import subprocess
 import sys
+import uuid
 from functools import partial
 from pathlib import Path
 
@@ -21,6 +22,53 @@ from harness.agent.state import RunStatus
 from harness.llama_client import ChatResponse, LlamaClientError, chat
 from harness.storage.database import SqliteRunRecorder
 from harness.tools.policy import ApprovalRequest, ToolMode, ToolPolicy
+
+
+def _add_agent_options(
+    subparser: argparse.ArgumentParser,
+    *,
+    default_context_strategy: str,
+) -> None:
+    subparser.add_argument("--repo", type=Path, default=Path.cwd())
+    subparser.add_argument("--base-url", default="http://127.0.0.1:9931")
+    subparser.add_argument("--model", default="Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf")
+    subparser.add_argument("--max-tokens", type=int, default=256)
+    subparser.add_argument("--timeout", type=float, default=120)
+    subparser.add_argument("--run-timeout", type=float, default=300)
+    subparser.add_argument("--max-model-calls", type=int, default=20)
+    subparser.add_argument("--max-steps", type=int, default=20)
+    subparser.add_argument("--coding", action="store_true")
+    subparser.add_argument("--auto-approve", action="store_true")
+    subparser.add_argument("--test-target", action="append", default=None)
+    subparser.add_argument("--test-timeout", type=float, default=None)
+    subparser.add_argument(
+        "--db-path",
+        type=Path,
+        default=Path(".runs/traces.db"),
+        help="path to SQLite database for run traces",
+    )
+    subparser.add_argument(
+        "--no-db",
+        action="store_true",
+        help="disable SQLite trace persistence",
+    )
+    subparser.add_argument(
+        "--context-strategy",
+        choices=["bounded_history", "editable_context"],
+        default=default_context_strategy,
+        help=f"prompt assembly context strategy (default: {default_context_strategy})",
+    )
+    subparser.add_argument(
+        "--session",
+        default=None,
+        help="optional session ID to reuse working memory across turns",
+    )
+    subparser.add_argument(
+        "--memory-dir",
+        type=Path,
+        default=Path(".harness/runs"),
+        help="base directory for run-scoped working memory (default: .harness/runs)",
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -40,49 +88,18 @@ def main(argv: list[str] | None = None) -> None:
     chat_parser.add_argument("--max-tokens", type=int, default=256)
     run_parser = commands.add_parser("run", help="answer a task about a repository")
     run_parser.add_argument("task")
-    run_parser.add_argument("--repo", type=Path, default=Path.cwd())
-    run_parser.add_argument("--base-url", default="http://127.0.0.1:9931")
-    run_parser.add_argument("--model", default="Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf")
-    run_parser.add_argument("--max-tokens", type=int, default=256)
-    run_parser.add_argument("--timeout", type=float, default=120)
-    run_parser.add_argument("--run-timeout", type=float, default=300)
-    run_parser.add_argument("--max-model-calls", type=int, default=20)
-    run_parser.add_argument("--max-steps", type=int, default=20)
-    run_parser.add_argument("--coding", action="store_true")
-    run_parser.add_argument("--auto-approve", action="store_true")
-    run_parser.add_argument("--test-target", action="append", default=None)
-    run_parser.add_argument("--test-timeout", type=float, default=None)
-    run_parser.add_argument(
-        "--db-path",
-        type=Path,
-        default=Path(".runs/traces.db"),
-        help="path to SQLite database for run traces",
+    _add_agent_options(run_parser, default_context_strategy="bounded_history")
+    session_parser = commands.add_parser(
+        "session",
+        help="start an interactive multi-turn agent session with tools and working.md",
     )
-    run_parser.add_argument(
-        "--no-db",
-        action="store_true",
-        help="disable SQLite trace persistence",
-    )
-    run_parser.add_argument(
-        "--context-strategy",
-        choices=["bounded_history", "editable_context"],
-        default="bounded_history",
-        help="prompt assembly context strategy (default: bounded_history)",
-    )
-    run_parser.add_argument(
-        "--session",
-        default=None,
-        help="optional session ID to reuse working memory across turns",
-    )
-    run_parser.add_argument(
-        "--memory-dir",
-        type=Path,
-        default=Path(".harness/runs"),
-        help="base directory for run-scoped working memory (default: .harness/runs)",
-    )
+    _add_agent_options(session_parser, default_context_strategy="editable_context")
     args = parser.parse_args(args_list)
     if args.command == "run":
         _run(args, parser)
+        return
+    if args.command == "session":
+        _session(args, parser)
         return
     if not args.prompt.strip():
         parser.error("chat prompt must not be blank")
@@ -106,18 +123,15 @@ def main(argv: list[str] | None = None) -> None:
     _print_response(response)
 
 
-def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    """Run a bounded read-only repository task and report its terminal state."""
-    if not args.task.strip():
-        parser.error("run task must not be blank")
+def _validate_agent_args(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
     if (
         args.auto_approve
         or args.test_target is not None
         or args.test_timeout is not None
     ) and not args.coding:
         parser.error("--auto-approve and test options require --coding")
-    if args.auto_approve and not args.coding:
-        parser.error("--auto-approve requires --coding")
     if args.max_tokens <= 0:
         parser.error("--max-tokens must be positive")
     if args.max_model_calls <= 0:
@@ -135,6 +149,19 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     ):
         parser.error("--test-timeout must be finite and positive")
 
+
+def _prepare_agent_runtime(
+    args: argparse.Namespace,
+    *,
+    session_id: str | None,
+) -> tuple[
+    ToolPolicy | None,
+    object,
+    str,
+    partial[ChatResponse],
+    dict[str, object],
+    SqliteRunRecorder | None,
+]:
     policy = None
     approve = None
     prompt = READ_ONLY_SYSTEM_PROMPT
@@ -170,7 +197,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         "coding": args.coding,
         "auto_approve": args.auto_approve,
         "context_strategy": args.context_strategy,
-        "session_id": args.session,
+        "session_id": session_id,
     }
     try:
         commit = subprocess.check_output(
@@ -186,6 +213,17 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     recorder = None
     if not args.no_db:
         recorder = SqliteRunRecorder(db_path=args.db_path)
+    return policy, approve, prompt, model, manifest, recorder
+
+
+def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    """Run a bounded read-only repository task and report its terminal state."""
+    if not args.task.strip():
+        parser.error("run task must not be blank")
+    _validate_agent_args(args, parser)
+    policy, approve, prompt, model, manifest, recorder = _prepare_agent_runtime(
+        args, session_id=args.session
+    )
 
     try:
         run = run_agent(
@@ -269,6 +307,59 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         raise SystemExit(130)
     if run.status is not RunStatus.COMPLETED:
         raise SystemExit(1)
+
+
+def _session(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
+    _validate_agent_args(args, parser)
+    session_id = args.session or f"session-{uuid.uuid4().hex[:8]}"
+    policy, approve, prompt, model, manifest, recorder = _prepare_agent_runtime(
+        args, session_id=session_id
+    )
+    notes_path = args.memory_dir / session_id / "working.md"
+    print(
+        f"Session {session_id} (notes: {notes_path}). Type /exit to quit.",
+        file=sys.stderr,
+    )
+    while True:
+        try:
+            task = input("You > ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return
+        if task.strip() == "/exit":
+            return
+        if not task.strip():
+            continue
+        try:
+            run = run_agent(
+                task,
+                args.repo,
+                model=model,
+                request_timeout=args.timeout,
+                run_timeout=args.run_timeout,
+                max_model_calls=args.max_model_calls,
+                max_steps=args.max_steps,
+                max_prompt_bytes=DEFAULT_MAX_PROMPT_BYTES - len(prompt.encode("utf-8")),
+                policy=policy,
+                approve=approve,
+                recorder=recorder,
+                manifest=manifest,
+                context_strategy=args.context_strategy,
+                session_id=session_id,
+                memory_dir=args.memory_dir,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
+
+        if run.status is RunStatus.COMPLETED:
+            print(run.final_response or "")
+        else:
+            detail = _STOP_DETAILS.get(run.stop_reason, "run stopped")
+            print(
+                f"harness: {detail}; status={run.status.value} "
+                f"stop_reason={run.stop_reason}",
+                file=sys.stderr,
+            )
 
 
 _STOP_DETAILS = {
