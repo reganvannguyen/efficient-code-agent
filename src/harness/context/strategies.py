@@ -98,6 +98,13 @@ class EditableContextStrategy:
                     joined = _clip_utf8(joined, self.max_excerpts_bytes)
                 excerpts_block = f"\n\nRepository excerpts:\n{joined}"
 
+        index_block = ""
+        if ctx.memory_index:
+            index_block = (
+                "\n\nAvailable memory notes (read with read_memory): "
+                + ", ".join(ctx.memory_index)
+            )
+
         dropped_history = False
         while True:
             nudge_block = ""
@@ -105,7 +112,7 @@ class EditableContextStrategy:
                 nudge_block = "\n\n[Context hint: older history was pruned to fit budget; save key findings to working.md with update_context.]"
             elif ctx.steps >= 2 and not _has_recorded_notes(ctx.task_notes):
                 nudge_block = "\n\n[Context hint: working.md has no saved findings yet; consider calling update_context if you have confirmed findings or a plan change.]"
-            base_prompt = f"{pinned}{notes_block}{excerpts_block}"
+            base_prompt = f"{pinned}{notes_block}{index_block}{excerpts_block}"
             if ctx.history:
                 base_prompt += (
                     "\n\nAction and observation history "
