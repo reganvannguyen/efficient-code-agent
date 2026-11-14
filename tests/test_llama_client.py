@@ -95,8 +95,12 @@ def test_chat_forwards_optional_system_prompt_and_response_schema(monkeypatch) -
         {"role": "user", "content": "Return JSON"},
     ]
     assert seen["payload"]["response_format"] == {
-        "type": "json_object",
-        "schema": schema,
+        "type": "json_schema",
+        "json_schema": {
+            "name": "agent_action",
+            "strict": True,
+            "schema": schema,
+        },
     }
 
 

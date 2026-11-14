@@ -304,3 +304,29 @@ def test_reruns_do_not_leak_prior_edits_or_notes(tmp_path: Path) -> None:
         model=lambda prompt, *, timeout: _response(next(run2_actions)),
     )
     assert res2.outcome == BenchmarkOutcome.RESOLVED
+
+
+def test_bind_chat_defaults_attaches_schema_and_system_prompt() -> None:
+    import functools
+
+    from harness.agent.runtime import CODING_SYSTEM_PROMPT
+    from harness.evaluation.runner import _bind_chat_defaults
+    from harness.llama_client import chat
+    from harness.tools.policy import ToolMode, ToolPolicy
+
+    policy = ToolPolicy(
+        edit_file=ToolMode.AUTO,
+        run_tests=ToolMode.DENY,
+        test_targets=(".",),
+    )
+    bound_direct = _bind_chat_defaults(chat, policy)
+    assert isinstance(bound_direct, functools.partial)
+    assert bound_direct.keywords["system_prompt"] == CODING_SYSTEM_PROMPT
+    assert "oneOf" in bound_direct.keywords["response_schema"]
+
+    partial_chat = functools.partial(chat, base_url="http://127.0.0.1:9931")
+    bound_partial = _bind_chat_defaults(partial_chat, policy)
+    assert isinstance(bound_partial, functools.partial)
+    assert bound_partial.keywords["base_url"] == "http://127.0.0.1:9931"
+    assert bound_partial.keywords["system_prompt"] == CODING_SYSTEM_PROMPT
+    assert "oneOf" in bound_partial.keywords["response_schema"]
