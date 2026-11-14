@@ -79,9 +79,9 @@ _NEXT_ACTION = """Choose the next executable action now. For path-only questions
 _CONTEXT_EDIT_INSTRUCTIONS = """
 Optional working-notes tool (call when you confirm a file/line finding, disprove a hypothesis, or switch from searching to editing — not after every step):
 {"kind":"tool","name":"update_context","arguments":{"operation":"replace","target":"working.md","content":"..."}}
-Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. You may update `## Goal` in working.md for the current sub-goal; the original task metadata remains locked by the harness.
+Supported targets: `working.md` (short active notes) and `findings/<name>.md` (longer reference notes). Supported operations: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. You may update `## Goal` in working.md for the current sub-goal; the original task metadata remains locked by the harness.
 Optional read_memory tool (list or read task.md / findings/*.md without bloating working.md):
-{"kind":"tool","name":"read_memory","arguments":{"target":"findings/name.md"}} (omit target to list available notes)."""
+{"kind":"tool","name":"read_memory","arguments":{"target":"findings/name.md"}} (omit target to list available notes). If repo search returns empty and findings/*.md appear in Available memory notes, check read_memory."""
 READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
     "type": "object",
     "oneOf": [
@@ -461,6 +461,11 @@ def run_agent(
                     if memory_store is not None
                     else in_memory_note
                 )
+                memory_index = (
+                    ("working.md", "task.md", *memory_store.list_findings())
+                    if memory_store is not None
+                    else ("working.md",)
+                )
                 prompt = strategy.build_prompt(
                     ContextInput(
                         instructions=instructions,
@@ -472,6 +477,7 @@ def run_agent(
                         steps=run.steps,
                         recent_events=tuple(run.events[-10:]),
                         task_notes=task_notes,
+                        memory_index=memory_index,
                     )
                 )
             stop = _boundary_stop(run, cancelled, deadline, emit)
@@ -1411,23 +1417,31 @@ def _execute_context_edit(
             "unsupported_operation",
             f"Unsupported operation {action.operation!r}; expected 'replace' or 'append'",
         )
-    if action.target != "working.md":
+    if action.target != "working.md" and not action.target.startswith("findings/"):
         return reject(
             "invalid_target",
-            "update_context may only edit 'working.md'",
+            "update_context may only edit 'working.md' or 'findings/<name>.md'",
         )
 
     if memory_store is not None:
         try:
             if action.operation == "replace":
-                memory_store.write_note("working.md", action.content)
+                memory_store.write_note(action.target, action.content)
             else:
-                memory_store.append_note("working.md", action.content)
+                memory_store.append_note(action.target, action.content)
         except MemoryStorageError as exc:
-            return reject("note_limit_exceeded", str(exc))
-        updated_text = memory_store.read_note("working.md")
+            error_code = (
+                "note_limit_exceeded" if "byte limit" in str(exc) else "invalid_target"
+            )
+            return reject(error_code, str(exc))
+        updated_text = memory_store.read_note(action.target)
         updated_in_memory = in_memory_note
     else:
+        if action.target != "working.md":
+            return reject(
+                "invalid_target",
+                "findings/*.md require disk memory_dir to be configured",
+            )
         if action.operation == "replace":
             candidate = action.content
         elif current_text and not current_text.endswith("\n") and action.content:

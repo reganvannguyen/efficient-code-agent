@@ -254,3 +254,47 @@ def test_run_without_context_edits_completes_and_schema_includes_when_enabled(
     }
     assert "update_context" not in default_names
     assert "update_context" in editable_names
+
+
+def test_update_context_can_create_findings_and_surfaces_memory_index(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    memory_dir = tmp_path / ".harness" / "runs"
+    prompts: list[str] = []
+
+    actions = iter(
+        [
+            {
+                "kind": "tool",
+                "name": "update_context",
+                "arguments": {
+                    "operation": "replace",
+                    "target": "findings/auth.md",
+                    "content": "# Auth Finding\n- Token leeway is 45s.\n",
+                },
+            },
+            {"kind": "complete", "summary": "Saved findings/auth.md."},
+        ]
+    )
+
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
+        prompts.append(prompt)
+        return _resp(next(actions))
+
+    run = run_agent(
+        "Save auth finding",
+        repo,
+        model=model,
+        context_strategy="editable_context",
+        memory_dir=memory_dir,
+    )
+    assert run.status == RunStatus.COMPLETED
+    assert (
+        "Available memory notes (read with read_memory): working.md, task.md"
+        in prompts[0]
+    )
+    assert "findings/auth.md" in prompts[1]
+    store = WorkingMemoryStore(memory_dir, run.run_id)
+    assert "Token leeway is 45s." in store.read_note("findings/auth.md")

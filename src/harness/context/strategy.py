@@ -23,6 +23,7 @@ class ContextInput:
     recent_events: tuple[RunEvent, ...] = ()
     repo_excerpts: tuple[str, ...] = ()
     task_notes: str | None = None
+    memory_index: tuple[str, ...] = ()
 
 
 @runtime_checkable
