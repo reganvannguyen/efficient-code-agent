@@ -1,5 +1,7 @@
 """Strict parsing for normalized model actions."""
 
+from __future__ import annotations
+
 import json
 from dataclasses import dataclass, field
 from typing import Literal, Union
@@ -12,6 +14,17 @@ class ToolAction:
     name: str
     arguments: dict[str, object]
     kind: Literal["tool"] = field(default="tool", init=False)
+
+
+@dataclass(frozen=True)
+class ContextEditAction:
+    """A normalized model request to edit working-memory notes."""
+
+    operation: str
+    target: str
+    content: str
+    run_id: str | None = None
+    kind: Literal["context_edit"] = field(default="context_edit", init=False)
 
 
 @dataclass(frozen=True)
@@ -30,7 +43,7 @@ class InvalidAction:
     kind: Literal["invalid"] = field(default="invalid", init=False)
 
 
-Action = Union[ToolAction, CompleteAction, InvalidAction]
+Action = Union[ToolAction, ContextEditAction, CompleteAction, InvalidAction]
 
 
 class _DuplicateKeyError(ValueError):
@@ -48,6 +61,34 @@ def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 def _reject_constant(value: str) -> None:
     raise ValueError(f"non-standard JSON constant: {value}")
+
+
+def _parse_context_edit_fields(fields: dict[str, object]) -> Action:
+    allowed = {"operation", "target", "content", "run_id"}
+    required = {"operation", "target", "content"}
+    keys = set(fields.keys())
+    if not required.issubset(keys) or not keys.issubset(allowed):
+        return InvalidAction(
+            "update_context requires operation, target, and content (optional run_id)"
+        )
+    operation = fields["operation"]
+    target = fields["target"]
+    content = fields["content"]
+    run_id = fields.get("run_id")
+    if not isinstance(operation, str) or not operation.strip():
+        return InvalidAction("update_context operation must be a non-blank string")
+    if not isinstance(target, str) or not target.strip():
+        return InvalidAction("update_context target must be a non-blank string")
+    if not isinstance(content, str):
+        return InvalidAction("update_context content must be a string")
+    if run_id is not None and (not isinstance(run_id, str) or not run_id.strip()):
+        return InvalidAction("update_context run_id must be a non-blank string")
+    return ContextEditAction(
+        operation=operation,
+        target=target,
+        content=content,
+        run_id=run_id,
+    )
 
 
 def parse_action(text: str) -> Action:
@@ -76,7 +117,13 @@ def parse_action(text: str) -> Action:
             return InvalidAction("tool name must be a non-blank string")
         if not isinstance(arguments, dict):
             return InvalidAction("tool arguments must be an object")
+        if name == "update_context":
+            return _parse_context_edit_fields(arguments)
         return ToolAction(name=name, arguments=arguments)
+
+    if kind == "context_edit":
+        body = {k: v for k, v in payload.items() if k != "kind"}
+        return _parse_context_edit_fields(body)
 
     if kind == "complete":
         if payload.keys() != {"kind", "summary"}:

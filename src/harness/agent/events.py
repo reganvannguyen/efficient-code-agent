@@ -20,6 +20,7 @@ class RunEventType(str, Enum):
     APPROVAL_REQUESTED = "approval_requested"
     APPROVAL_RESOLVED = "approval_resolved"
     VERIFICATION_RESULT = "verification_result"
+    CONTEXT_EDIT = "context_edit"
     BUDGET_EXCEEDED = "budget_exceeded"
     CANCELLED = "cancelled"
 
