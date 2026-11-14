@@ -11,6 +11,7 @@ from pathlib import Path
 
 DEFAULT_MEMORY_BASE_DIR = Path(".harness/runs")
 DEFAULT_MAX_NOTE_BYTES = 16_384
+DEFAULT_READ_MEMORY_MAX_BYTES = 4_096
 _SCOPE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _FINDING_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.md$")
 
@@ -239,3 +240,56 @@ class WorkingMemoryStore:
             for path in self.findings_dir.iterdir()
             if path.is_file() and not path.is_symlink() and path.suffix == ".md"
         )
+
+    def read_memory_bounded(
+        self,
+        target: str | None = None,
+        *,
+        max_bytes: int = DEFAULT_READ_MEMORY_MAX_BYTES,
+    ) -> dict[str, object]:
+        """List available notes or read one bounded note with source/age metadata."""
+        if max_bytes <= 0:
+            raise MemoryStorageError("max_bytes must be positive")
+        if target is None:
+            available: list[str] = []
+            if self.working_path.exists():
+                available.append("working.md")
+            if self.task_path.exists():
+                available.append("task.md")
+            available.extend(self.list_findings())
+            return {
+                "ok": True,
+                "available": available,
+                "truncated": False,
+            }
+
+        path = self.resolve_note_path(target)
+        if not path.exists():
+            raise MemoryStorageError(f"Memory note not found: {target!r}")
+        text = path.read_text(encoding="utf-8")
+        raw = text.encode("utf-8")
+        truncated = len(raw) > max_bytes
+        excerpt = (
+            raw[:max_bytes].decode("utf-8", errors="ignore") if truncated else text
+        )
+
+        source: str | None = None
+        observed_at: str | None = None
+        for line in text.splitlines()[:10]:
+            if line.startswith("- Source: "):
+                source = line.removeprefix("- Source: ").strip()
+            elif line.startswith("- Observed: "):
+                observed_at = line.removeprefix("- Observed: ").strip()
+
+        stat = path.stat()
+        return {
+            "ok": True,
+            "target": target,
+            "content": excerpt,
+            "bytes_returned": len(excerpt.encode("utf-8")),
+            "total_bytes": len(raw),
+            "truncated": truncated,
+            "source": source,
+            "observed_at": observed_at,
+            "age_seconds": round(max(0.0, time.time() - stat.st_mtime), 2),
+        }

@@ -25,6 +25,7 @@ from harness.agent.verification import (
 )
 from harness.context import (
     DEFAULT_MAX_NOTE_BYTES,
+    DEFAULT_READ_MEMORY_MAX_BYTES,
     BoundedHistoryStrategy,
     ContextInput,
     ContextStrategy,
@@ -78,7 +79,9 @@ _NEXT_ACTION = """Choose the next executable action now. For path-only questions
 _CONTEXT_EDIT_INSTRUCTIONS = """
 Optional working-notes tool (call when you confirm a file/line finding, disprove a hypothesis, or switch from searching to editing — not after every step):
 {"kind":"tool","name":"update_context","arguments":{"operation":"replace","target":"working.md","content":"..."}}
-Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. You may update `## Goal` in working.md for the current sub-goal; the original task metadata remains locked by the harness."""
+Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. You may update `## Goal` in working.md for the current sub-goal; the original task metadata remains locked by the harness.
+Optional read_memory tool (list or read task.md / findings/*.md without bloating working.md):
+{"kind":"tool","name":"read_memory","arguments":{"target":"findings/name.md"}} (omit target to list available notes)."""
 READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
     "type": "object",
     "oneOf": [
@@ -182,6 +185,30 @@ def action_schema(
                             "run_id": {"type": "string", "minLength": 1},
                         },
                         "required": ["operation", "target", "content"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["kind", "name", "arguments"],
+                "additionalProperties": False,
+            }
+        )
+        variants.append(
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "tool"},
+                    "name": {"type": "string", "const": "read_memory"},
+                    "arguments": {
+                        "type": "object",
+                        "properties": {
+                            "target": {"type": "string", "minLength": 1},
+                            "max_bytes": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 8192,
+                            },
+                            "run_id": {"type": "string", "minLength": 1},
+                        },
                         "additionalProperties": False,
                     },
                 },
@@ -525,9 +552,20 @@ def run_agent(
                 stop = _boundary_stop(run, cancelled, deadline, emit)
                 if stop:
                     return stop
-                result = _execute_runtime_tool(
-                    run, action, root, policy, approve, cancelled, deadline, emit
-                )
+                if action.name == "read_memory":
+                    result = _execute_read_memory(
+                        run,
+                        action,
+                        strategy=strategy,
+                        memory_store=memory_store,
+                        in_memory_note=in_memory_note,
+                        expected_scope_id=session_id or run.run_id,
+                        emit=emit,
+                    )
+                else:
+                    result = _execute_runtime_tool(
+                        run, action, root, policy, approve, cancelled, deadline, emit
+                    )
                 if run.status in {
                     RunStatus.CANCELLED,
                     RunStatus.FAILED,
@@ -535,7 +573,14 @@ def run_agent(
                 }:
                     return run
                 error = result.get("error_code")
-                if error in {"unknown_tool", "invalid_arguments", "path_denied"}:
+                if error in {
+                    "unknown_tool",
+                    "invalid_arguments",
+                    "path_denied",
+                    "scope_mismatch",
+                    "read_memory_disabled",
+                    "memory_not_found",
+                }:
                     invalid_streak += 1
                 else:
                     invalid_streak = 0
@@ -1166,6 +1211,142 @@ def _coding_prompt(policy: ToolPolicy) -> tuple[str, str]:
         + ". Return exactly one JSON object."
     )
     return instructions, directive
+
+
+def _execute_read_memory(
+    run: AgentRun,
+    action: ToolAction,
+    *,
+    strategy: ContextStrategy,
+    memory_store: WorkingMemoryStore | None,
+    in_memory_note: str | None,
+    expected_scope_id: str,
+    emit: Callable[..., RunEvent],
+) -> dict[str, object]:
+    """Validate and execute a bounded task-scoped read_memory tool call."""
+    emit(
+        RunEventType.TOOL_REQUESTED,
+        step=run.steps,
+        data={"tool": action.name, "arguments": action.arguments},
+    )
+    start_mono = monotonic()
+
+    def finish(result: dict[str, object]) -> dict[str, object]:
+        emit(
+            RunEventType.TOOL_RESULT,
+            step=run.steps,
+            duration_ms=(monotonic() - start_mono) * 1000.0,
+            data={
+                "tool": action.name,
+                "ok": bool(result.get("ok")),
+                "error_code": result.get("error_code"),
+            },
+        )
+        return result
+
+    if isinstance(strategy, BoundedHistoryStrategy):
+        return finish(
+            {
+                "ok": False,
+                "error_code": "read_memory_disabled",
+                "error": "read_memory is only available with an editable context strategy",
+            }
+        )
+
+    allowed_keys = {"target", "max_bytes", "run_id"}
+    if not set(action.arguments.keys()).issubset(allowed_keys):
+        return finish(
+            {
+                "ok": False,
+                "error_code": "invalid_arguments",
+                "error": "read_memory accepts only optional target, max_bytes, and run_id",
+            }
+        )
+
+    req_run_id = action.arguments.get("run_id")
+    if req_run_id is not None:
+        if not isinstance(req_run_id, str) or not req_run_id.strip():
+            return finish(
+                {
+                    "ok": False,
+                    "error_code": "invalid_arguments",
+                    "error": "run_id must be a non-blank string",
+                }
+            )
+        if req_run_id not in {run.run_id, expected_scope_id}:
+            return finish(
+                {
+                    "ok": False,
+                    "error_code": "scope_mismatch",
+                    "error": "read_memory cannot access another run_id or session",
+                }
+            )
+
+    target = action.arguments.get("target")
+    if target is not None and (not isinstance(target, str) or not target.strip()):
+        return finish(
+            {
+                "ok": False,
+                "error_code": "invalid_arguments",
+                "error": "target must be a non-blank string",
+            }
+        )
+
+    max_bytes = action.arguments.get("max_bytes", DEFAULT_READ_MEMORY_MAX_BYTES)
+    if (
+        isinstance(max_bytes, bool)
+        or not isinstance(max_bytes, int)
+        or max_bytes <= 0
+        or max_bytes > 8192
+    ):
+        return finish(
+            {
+                "ok": False,
+                "error_code": "invalid_arguments",
+                "error": "max_bytes must be an integer between 1 and 8192",
+            }
+        )
+
+    if memory_store is not None:
+        try:
+            return finish(memory_store.read_memory_bounded(target, max_bytes=max_bytes))
+        except MemoryStorageError as exc:
+            message = str(exc)
+            error_code = (
+                "memory_not_found" if "not found" in message.lower() else "path_denied"
+            )
+            return finish({"ok": False, "error_code": error_code, "error": message})
+
+    if target is None:
+        return finish(
+            {
+                "ok": True,
+                "available": ["working.md"] if in_memory_note else [],
+                "truncated": False,
+            }
+        )
+    if target != "working.md":
+        return finish(
+            {
+                "ok": False,
+                "error_code": "memory_not_found",
+                "error": f"Memory note not found: {target!r}",
+            }
+        )
+    text = in_memory_note or ""
+    raw = text.encode("utf-8")
+    truncated = len(raw) > max_bytes
+    excerpt = raw[:max_bytes].decode("utf-8", errors="ignore") if truncated else text
+    return finish(
+        {
+            "ok": True,
+            "target": "working.md",
+            "content": excerpt,
+            "bytes_returned": len(excerpt.encode("utf-8")),
+            "total_bytes": len(raw),
+            "truncated": truncated,
+        }
+    )
 
 
 def _execute_context_edit(

@@ -3,6 +3,7 @@
 from harness.context.memory import (
     DEFAULT_MAX_NOTE_BYTES,
     DEFAULT_MEMORY_BASE_DIR,
+    DEFAULT_READ_MEMORY_MAX_BYTES,
     MemoryStorageError,
     WorkingMemoryStore,
     validate_scope_id,
@@ -20,6 +21,7 @@ __all__ = [
     "ContextStrategy",
     "DEFAULT_MAX_NOTE_BYTES",
     "DEFAULT_MEMORY_BASE_DIR",
+    "DEFAULT_READ_MEMORY_MAX_BYTES",
     "EditableContextStrategy",
     "MemoryStorageError",
     "WorkingMemoryStore",
