@@ -138,6 +138,41 @@ def test_session_id_reuses_working_memory_across_turns(tmp_path: Path) -> None:
     assert store.read_metadata()["original_task"] == "Turn 1: inspect app.py"
 
 
+def test_session_turn_auto_appends_summary_when_update_context_skipped(
+    tmp_path: Path,
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    memory_dir = tmp_path / ".harness" / "runs"
+
+    run1 = run_agent(
+        "Check auth config",
+        repo,
+        model=lambda _p, *, timeout: _complete("Auth config uses HS256."),
+        context_strategy="editable_context",
+        session_id="auto-summary",
+        memory_dir=memory_dir,
+    )
+    assert run1.status == RunStatus.COMPLETED
+
+    seen_prompts: list[str] = []
+
+    def capture_model(prompt: str, *, timeout: float) -> ChatResponse:
+        seen_prompts.append(prompt)
+        return _complete("Turn 2 done.")
+
+    run2 = run_agent(
+        "What did we just find?",
+        repo,
+        model=capture_model,
+        context_strategy="editable_context",
+        session_id="auto-summary",
+        memory_dir=memory_dir,
+    )
+    assert run2.status == RunStatus.COMPLETED
+    assert "Auth config uses HS256." in seen_prompts[0]
+
+
 def test_harness_memory_excluded_from_candidate_patch(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     repo.mkdir()

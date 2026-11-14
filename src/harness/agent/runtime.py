@@ -545,6 +545,8 @@ def run_agent(
                 no_progress_tracker.reset()
                 run.verification_quality = quality
                 run.final_response = action.summary
+                if session_id is not None and memory_store is not None:
+                    _record_session_turn_summary(memory_store, task, action.summary)
                 _stop(run, RunStatus.COMPLETED, "model_complete", emit)
                 return run
 
@@ -1461,6 +1463,23 @@ def _execute_context_edit(
         },
         updated_in_memory,
     )
+
+
+def _record_session_turn_summary(
+    memory_store: WorkingMemoryStore,
+    task: str,
+    summary: str,
+) -> None:
+    """Append a compact turn summary to working.md when a session turn skipped update_context."""
+    task_excerpt = _utf8_excerpt(" ".join(task.split()), 200)
+    summary_excerpt = _utf8_excerpt(" ".join(summary.split()), 400)
+    entry = (
+        f"\n## Completed Turn\n- Task: {task_excerpt}\n- Outcome: {summary_excerpt}\n"
+    )
+    try:
+        memory_store.append_note("working.md", entry)
+    except MemoryStorageError:
+        pass
 
 
 def _utf8_excerpt(value: str, byte_limit: int) -> str:
