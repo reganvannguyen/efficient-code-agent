@@ -52,6 +52,9 @@ else
 fi
 
 # 2. Launch harness CLI
+if [ "$#" -eq 0 ]; then
+    set -- session
+fi
 echo "Launching harness..."
 uv run python -m harness "$@"
 

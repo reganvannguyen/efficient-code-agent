@@ -76,10 +76,9 @@ Model = Callable[..., ChatResponse]
 _NEXT_ACTION = """Choose the next executable action now. For path-only questions, use list_files; for text or regular-expression discovery, use search_code; for requested file contents, use read_file. Search queries are regexes; filename globs are separate Path.match patterns. Escape punctuation for literal searches. A successful empty search reports no matches within the bounded visible workspace search. Do not infer contents from filenames. Return exactly one JSON object starting with { and ending with }. Never use Markdown fences. Tool requests use kind=tool and name=search_code, read_file, or list_files; final answers use kind=complete and summary."""
 
 _CONTEXT_EDIT_INSTRUCTIONS = """
-Optional working-notes tool (use only when an important finding, disproven hypothesis, or plan change warrants it — do not call after every step):
+Optional working-notes tool (call when you confirm a file/line finding, disprove a hypothesis, or switch from searching to editing — not after every step):
 {"kind":"tool","name":"update_context","arguments":{"operation":"replace","target":"working.md","content":"..."}}
-Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. Working-note edits cannot change the original task or safety policy.
-For greetings or conversational messages that do not ask about repository files, reply directly using {"kind":"complete","summary":"..."} without calling repository tools."""
+Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. You may update `## Goal` in working.md for the current sub-goal; the original task metadata remains locked by the harness."""
 READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
     "type": "object",
     "oneOf": [
@@ -429,6 +428,7 @@ def run_agent(
                 else:
                     instructions, directive = _coding_prompt(policy)
                 instructions += _CONTEXT_EDIT_INSTRUCTIONS
+                directive += " You may also use name=update_context to update working.md when needed."
                 task_notes = (
                     memory_store.read_note("working.md")
                     if memory_store is not None

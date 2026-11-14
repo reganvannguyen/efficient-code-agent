@@ -135,3 +135,57 @@ def test_same_transcript_runs_under_either_strategy_and_records_manifest(
         saved_config = saved_manifest["config"]
         assert saved_config["context_strategy"] == strategy_name
         assert saved_config["context_strategy_parameters"]["strategy"] == strategy_name
+
+
+def test_editable_context_strategy_adds_soft_nudge_only_when_needed() -> None:
+    strategy = EditableContextStrategy()
+    empty_template = (
+        "# Working Context\n\n## Goal\nTask\n\n"
+        "## Confirmed Findings\n\n## Current Hypothesis\n\n"
+        "## Next Action\n\n## Open Questions\n"
+    )
+
+    early = strategy.build_prompt(
+        ContextInput(
+            instructions="RULES",
+            directive="NEXT",
+            task="Task",
+            history=[],
+            byte_limit=4096,
+            steps=1,
+            task_notes=empty_template,
+        )
+    )
+    assert early is not None
+    assert "[Context hint:" not in early
+
+    nudged = strategy.build_prompt(
+        ContextInput(
+            instructions="RULES",
+            directive="NEXT",
+            task="Task",
+            history=[],
+            byte_limit=4096,
+            steps=2,
+            task_notes=empty_template,
+        )
+    )
+    assert nudged is not None
+    assert "[Context hint: working.md has no saved findings yet" in nudged
+
+    populated = strategy.build_prompt(
+        ContextInput(
+            instructions="RULES",
+            directive="NEXT",
+            task="Task",
+            history=[],
+            byte_limit=4096,
+            steps=5,
+            task_notes=empty_template.replace(
+                "## Confirmed Findings\n",
+                "## Confirmed Findings\n- Found bug in a.py:1\n",
+            ),
+        )
+    )
+    assert populated is not None
+    assert "[Context hint:" not in populated

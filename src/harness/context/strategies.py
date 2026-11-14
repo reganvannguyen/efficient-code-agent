@@ -12,6 +12,28 @@ def _clip_utf8(value: str, byte_limit: int) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
+def _has_recorded_notes(notes: str | None) -> bool:
+    if not notes or not notes.strip():
+        return False
+    in_body_section = False
+    for line in notes.splitlines():
+        stripped = line.strip()
+        if stripped in {
+            "## Confirmed Findings",
+            "## Current Hypothesis",
+            "## Next Action",
+            "## Open Questions",
+        }:
+            in_body_section = True
+            continue
+        if stripped.startswith("#"):
+            in_body_section = False
+            continue
+        if in_body_section and stripped:
+            return True
+    return "#" not in notes
+
+
 @dataclass(frozen=True)
 class BoundedHistoryStrategy:
     """Phase 2-4 baseline strategy: pinned instructions/task plus oldest-dropped history."""
@@ -76,20 +98,31 @@ class EditableContextStrategy:
                     joined = _clip_utf8(joined, self.max_excerpts_bytes)
                 excerpts_block = f"\n\nRepository excerpts:\n{joined}"
 
+        dropped_history = False
         while True:
-            prompt = f"{pinned}{notes_block}{excerpts_block}"
+            nudge_block = ""
+            if dropped_history:
+                nudge_block = "\n\n[Context hint: older history was pruned to fit budget; save key findings to working.md with update_context.]"
+            elif ctx.steps >= 2 and not _has_recorded_notes(ctx.task_notes):
+                nudge_block = "\n\n[Context hint: working.md has no saved findings yet; consider calling update_context if you have confirmed findings or a plan change.]"
+            base_prompt = f"{pinned}{notes_block}{excerpts_block}"
             if ctx.history:
-                prompt += (
+                base_prompt += (
                     "\n\nAction and observation history "
                     "(JSON exchanges, oldest first):\n"
                 )
-                prompt += "\n".join(ctx.history)
-            prompt += "\n\nNext action:\n" + ctx.directive
+                base_prompt += "\n".join(ctx.history)
+            if nudge_block:
+                nudged = f"{base_prompt}{nudge_block}\n\nNext action:\n{ctx.directive}"
+                if len(nudged.encode("utf-8")) <= ctx.byte_limit:
+                    return nudged
+            prompt = f"{base_prompt}\n\nNext action:\n{ctx.directive}"
             if len(prompt.encode("utf-8")) <= ctx.byte_limit:
                 return prompt
             if len(ctx.history) <= 1:
                 return None
             del ctx.history[0]
+            dropped_history = True
 
 
 def resolve_context_strategy(

@@ -28,11 +28,12 @@ def _add_agent_options(
     subparser: argparse.ArgumentParser,
     *,
     default_context_strategy: str,
+    default_max_tokens: int = 256,
 ) -> None:
     subparser.add_argument("--repo", type=Path, default=Path.cwd())
     subparser.add_argument("--base-url", default="http://127.0.0.1:9931")
     subparser.add_argument("--model", default="Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf")
-    subparser.add_argument("--max-tokens", type=int, default=256)
+    subparser.add_argument("--max-tokens", type=int, default=default_max_tokens)
     subparser.add_argument("--timeout", type=float, default=120)
     subparser.add_argument("--run-timeout", type=float, default=300)
     subparser.add_argument("--max-model-calls", type=int, default=20)
@@ -93,7 +94,11 @@ def main(argv: list[str] | None = None) -> None:
         "session",
         help="start an interactive multi-turn agent session with tools and working.md",
     )
-    _add_agent_options(session_parser, default_context_strategy="editable_context")
+    _add_agent_options(
+        session_parser,
+        default_context_strategy="editable_context",
+        default_max_tokens=1024,
+    )
     args = parser.parse_args(args_list)
     if args.command == "run":
         _run(args, parser)
