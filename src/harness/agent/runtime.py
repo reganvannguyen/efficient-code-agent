@@ -12,16 +12,23 @@ from pathlib import Path
 from time import monotonic
 
 from harness.agent.events import BenchmarkOutcome, RunEvent, RunEventType
-from harness.agent.protocol import CompleteAction, ToolAction, parse_action
+from harness.agent.protocol import (
+    CompleteAction,
+    ContextEditAction,
+    ToolAction,
+    parse_action,
+)
 from harness.agent.state import AgentRun, RunStatus
 from harness.agent.verification import (
     NoProgressTracker,
     evaluate_verification,
 )
 from harness.context import (
+    DEFAULT_MAX_NOTE_BYTES,
     BoundedHistoryStrategy,
     ContextInput,
     ContextStrategy,
+    MemoryStorageError,
     WorkingMemoryStore,
     resolve_context_strategy,
 )
@@ -67,6 +74,11 @@ Only `kind` values `tool` and `complete` are supported. For a tool request, put 
 Model = Callable[..., ChatResponse]
 
 _NEXT_ACTION = """Choose the next executable action now. For path-only questions, use list_files; for text or regular-expression discovery, use search_code; for requested file contents, use read_file. Search queries are regexes; filename globs are separate Path.match patterns. Escape punctuation for literal searches. A successful empty search reports no matches within the bounded visible workspace search. Do not infer contents from filenames. Return exactly one JSON object starting with { and ending with }. Never use Markdown fences. Tool requests use kind=tool and name=search_code, read_file, or list_files; final answers use kind=complete and summary."""
+
+_CONTEXT_EDIT_INSTRUCTIONS = """
+Optional working-notes tool (use only when an important finding, disproven hypothesis, or plan change warrants it — do not call after every step):
+{"kind":"tool","name":"update_context","arguments":{"operation":"replace","target":"working.md","content":"..."}}
+Supported operations on working.md: `replace` (rewrite/prune) and `append`. Keep source paths/line ranges and clearly separate confirmed findings from hypotheses. Working-note edits cannot change the original task or safety policy."""
 READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
     "type": "object",
     "oneOf": [
@@ -142,13 +154,43 @@ READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
 }
 
 
-def action_schema(policy: ToolPolicy | None = None) -> dict[str, object]:
+def action_schema(
+    policy: ToolPolicy | None = None,
+    *,
+    include_context_edit: bool = False,
+) -> dict[str, object]:
     """Return a private response schema matching the enabled tool profile."""
     schema = copy.deepcopy(READ_ONLY_ACTION_SCHEMA)
-    if policy is None:
-        return schema
     variants = schema["oneOf"]
     assert isinstance(variants, list)
+    if include_context_edit:
+        variants.append(
+            {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "const": "tool"},
+                    "name": {"type": "string", "const": "update_context"},
+                    "arguments": {
+                        "type": "object",
+                        "properties": {
+                            "operation": {
+                                "type": "string",
+                                "enum": ["replace", "append"],
+                            },
+                            "target": {"type": "string", "minLength": 1},
+                            "content": {"type": "string"},
+                            "run_id": {"type": "string", "minLength": 1},
+                        },
+                        "required": ["operation", "target", "content"],
+                        "additionalProperties": False,
+                    },
+                },
+                "required": ["kind", "name", "arguments"],
+                "additionalProperties": False,
+            }
+        )
+    if policy is None:
+        return schema
     if policy.edit_file is not ToolMode.DENY:
         variants.append(
             {
@@ -353,6 +395,11 @@ def run_agent(
     no_progress_tracker = NoProgressTracker(
         max_repetitions=DEFAULT_MAX_NO_PROGRESS_REPETITIONS
     )
+    in_memory_note: str | None = (
+        ""
+        if memory_store is None and not isinstance(strategy, BoundedHistoryStrategy)
+        else None
+    )
     history: list[str] = []
     try:
         deadline = monotonic() + run_timeout
@@ -380,10 +427,11 @@ def run_agent(
                     instructions, directive = _INSTRUCTIONS, _NEXT_ACTION
                 else:
                     instructions, directive = _coding_prompt(policy)
+                instructions += _CONTEXT_EDIT_INSTRUCTIONS
                 task_notes = (
                     memory_store.read_note("working.md")
                     if memory_store is not None
-                    else None
+                    else in_memory_note
                 )
                 prompt = strategy.build_prompt(
                     ContextInput(
@@ -502,6 +550,51 @@ def run_agent(
                             "kind": action.kind,
                             "name": action.name,
                             "arguments": action.arguments,
+                        },
+                        result,
+                    )
+                )
+                if invalid_streak >= max_consecutive_invalid_actions:
+                    _stop(run, RunStatus.LIMIT_REACHED, "invalid_action_limit", emit)
+                    return run
+                continue
+
+            if isinstance(action, ContextEditAction):
+                stop = _boundary_stop(run, cancelled, deadline, emit)
+                if stop:
+                    return stop
+                result, in_memory_note = _execute_context_edit(
+                    run,
+                    action,
+                    strategy=strategy,
+                    memory_store=memory_store,
+                    in_memory_note=in_memory_note,
+                    expected_scope_id=session_id or run.run_id,
+                    emit=emit,
+                )
+                if result.get("accepted"):
+                    invalid_streak = 0
+                    if no_progress_tracker.record_action(
+                        "context_edit",
+                        {
+                            "operation": action.operation,
+                            "target": action.target,
+                            "content": action.content,
+                        },
+                    ):
+                        run.unresolved_issues.append(
+                            "Repeated identical context_edit call without progress"
+                        )
+                        _stop(run, RunStatus.LIMIT_REACHED, "no_progress", emit)
+                        return run
+                else:
+                    invalid_streak += 1
+                history.append(
+                    _exchange(
+                        {
+                            "kind": action.kind,
+                            "operation": action.operation,
+                            "target": action.target,
                         },
                         result,
                     )
@@ -1072,6 +1165,120 @@ def _coding_prompt(policy: ToolPolicy) -> tuple[str, str]:
         + ". Return exactly one JSON object."
     )
     return instructions, directive
+
+
+def _execute_context_edit(
+    run: AgentRun,
+    action: ContextEditAction,
+    *,
+    strategy: ContextStrategy,
+    memory_store: WorkingMemoryStore | None,
+    in_memory_note: str | None,
+    expected_scope_id: str,
+    emit: Callable[..., RunEvent],
+) -> tuple[dict[str, object], str | None]:
+    """Validate and apply a model-initiated working-note edit."""
+    current_text = (
+        memory_store.read_note("working.md")
+        if memory_store is not None
+        else (in_memory_note or "")
+    )
+    current_bytes = len(current_text.encode("utf-8"))
+    content_bytes = len(action.content.encode("utf-8"))
+
+    def reject(error_code: str, message: str) -> tuple[dict[str, object], str | None]:
+        emit(
+            RunEventType.CONTEXT_EDIT,
+            step=run.steps,
+            data={
+                "operation": action.operation,
+                "target": action.target,
+                "accepted": False,
+                "error_code": error_code,
+                "content_bytes": content_bytes,
+                "note_bytes": current_bytes,
+            },
+        )
+        return (
+            {
+                "accepted": False,
+                "error_code": error_code,
+                "error": message,
+                "note_bytes": current_bytes,
+            },
+            in_memory_note,
+        )
+
+    if isinstance(strategy, BoundedHistoryStrategy):
+        return reject(
+            "context_edit_disabled",
+            "update_context is only available with an editable context strategy",
+        )
+    if action.run_id is not None and action.run_id not in {
+        run.run_id,
+        expected_scope_id,
+    }:
+        return reject(
+            "scope_mismatch",
+            "update_context cannot target a different run_id or session",
+        )
+    if action.operation not in {"replace", "append"}:
+        return reject(
+            "unsupported_operation",
+            f"Unsupported operation {action.operation!r}; expected 'replace' or 'append'",
+        )
+    if action.target != "working.md":
+        return reject(
+            "invalid_target",
+            "update_context may only edit 'working.md'",
+        )
+
+    if memory_store is not None:
+        try:
+            if action.operation == "replace":
+                memory_store.write_note("working.md", action.content)
+            else:
+                memory_store.append_note("working.md", action.content)
+        except MemoryStorageError as exc:
+            return reject("note_limit_exceeded", str(exc))
+        updated_text = memory_store.read_note("working.md")
+        updated_in_memory = in_memory_note
+    else:
+        if action.operation == "replace":
+            candidate = action.content
+        elif current_text and not current_text.endswith("\n") and action.content:
+            candidate = f"{current_text}\n{action.content}"
+        else:
+            candidate = f"{current_text}{action.content}"
+        if len(candidate.encode("utf-8")) > DEFAULT_MAX_NOTE_BYTES:
+            return reject(
+                "note_limit_exceeded",
+                f"Note 'working.md' exceeds byte limit ({len(candidate.encode('utf-8'))} > {DEFAULT_MAX_NOTE_BYTES})",
+            )
+        updated_text = candidate
+        updated_in_memory = candidate
+
+    note_bytes = len(updated_text.encode("utf-8"))
+    emit(
+        RunEventType.CONTEXT_EDIT,
+        step=run.steps,
+        data={
+            "operation": action.operation,
+            "target": action.target,
+            "accepted": True,
+            "content_bytes": content_bytes,
+            "note_bytes": note_bytes,
+        },
+    )
+    return (
+        {
+            "accepted": True,
+            "operation": action.operation,
+            "target": action.target,
+            "note_bytes": note_bytes,
+        },
+        updated_in_memory,
+    )
 
 
 def _utf8_excerpt(value: str, byte_limit: int) -> str:

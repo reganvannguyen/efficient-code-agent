@@ -153,7 +153,10 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         base_url=args.base_url,
         model=args.model,
         max_tokens=args.max_tokens,
-        response_schema=action_schema(policy),
+        response_schema=action_schema(
+            policy,
+            include_context_edit=(args.context_strategy == "editable_context"),
+        ),
         system_prompt=prompt,
     )
     manifest: dict[str, object] = {
