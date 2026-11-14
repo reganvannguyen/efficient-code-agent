@@ -110,12 +110,18 @@ def prepare_clean_checkout(
 
 def capture_workspace_patch(workspace: Path, *, timeout: float = 30.0) -> str:
     """Return a unified diff of all tracked and untracked changes against HEAD."""
-    intent = _run_git(["-C", str(workspace), "add", "-N", "."], timeout=timeout)
+    intent = _run_git(
+        ["-C", str(workspace), "add", "-N", "--", ".", ":(exclude).harness"],
+        timeout=timeout,
+    )
     if intent.returncode != 0:
         raise EvaluationSetupError(
             f"Failed to stage untracked files in '{workspace}': {intent.stderr.strip()}"
         )
-    diff = _run_git(["-C", str(workspace), "diff", "HEAD"], timeout=timeout)
+    diff = _run_git(
+        ["-C", str(workspace), "diff", "HEAD", "--", ".", ":(exclude).harness"],
+        timeout=timeout,
+    )
     if diff.returncode != 0:
         raise EvaluationSetupError(
             f"Failed to capture diff in '{workspace}': {diff.stderr.strip()}"
