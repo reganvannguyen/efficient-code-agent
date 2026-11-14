@@ -22,6 +22,7 @@ from harness.context import (
     BoundedHistoryStrategy,
     ContextInput,
     ContextStrategy,
+    WorkingMemoryStore,
     resolve_context_strategy,
 )
 from harness.llama_client import (
@@ -224,6 +225,8 @@ def run_agent(
     recorder: RunRecorder | None = None,
     manifest: dict[str, object] | None = None,
     context_strategy: ContextStrategy | str | None = None,
+    session_id: str | None = None,
+    memory_dir: Path | None = None,
 ) -> AgentRun:
     """Run a cooperative, bounded tool loop for one repository task.
 
@@ -291,6 +294,24 @@ def run_agent(
         return event
 
     strategy = resolve_context_strategy(context_strategy)
+    memory_store: WorkingMemoryStore | None = None
+    if memory_dir is not None:
+        memory_store = WorkingMemoryStore(memory_dir, scope_id=session_id or run.run_id)
+        policy_summary: dict[str, object] = (
+            {"read_only": True}
+            if policy is None
+            else {
+                "read_only": False,
+                "edit_file": policy.edit_file.value,
+                "run_tests": policy.run_tests.value,
+            }
+        )
+        memory_store.initialize(
+            task,
+            run_id=run.run_id,
+            session_id=session_id,
+            policy_summary=policy_summary,
+        )
     effective_manifest: dict[str, object] | None = (
         dict(manifest) if manifest is not None else None
     )
@@ -310,6 +331,11 @@ def run_agent(
         )
         run_started_data["context_strategy"] = strategy.name
         run_started_data["context_strategy_parameters"] = strategy.parameters()
+    if session_id is not None:
+        if effective_manifest is None:
+            effective_manifest = {}
+        effective_manifest.setdefault("session_id", session_id)
+        run_started_data["session_id"] = session_id
 
     if recorder is not None:
         try:
@@ -354,6 +380,11 @@ def run_agent(
                     instructions, directive = _INSTRUCTIONS, _NEXT_ACTION
                 else:
                     instructions, directive = _coding_prompt(policy)
+                task_notes = (
+                    memory_store.read_note("working.md")
+                    if memory_store is not None
+                    else None
+                )
                 prompt = strategy.build_prompt(
                     ContextInput(
                         instructions=instructions,
@@ -364,6 +395,7 @@ def run_agent(
                         run_status=run.status.value,
                         steps=run.steps,
                         recent_events=tuple(run.events[-10:]),
+                        task_notes=task_notes,
                     )
                 )
             stop = _boundary_stop(run, cancelled, deadline, emit)

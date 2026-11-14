@@ -11,6 +11,7 @@ __pycache__/
 
 # Run traces, SQLite databases, and local evaluation artifacts
 .runs/
+.harness/
 artifacts/
 *.db
 *.sqlite

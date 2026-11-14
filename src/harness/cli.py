@@ -69,6 +69,17 @@ def main(argv: list[str] | None = None) -> None:
         default="bounded_history",
         help="prompt assembly context strategy (default: bounded_history)",
     )
+    run_parser.add_argument(
+        "--session",
+        default=None,
+        help="optional session ID to reuse working memory across turns",
+    )
+    run_parser.add_argument(
+        "--memory-dir",
+        type=Path,
+        default=Path(".harness/runs"),
+        help="base directory for run-scoped working memory (default: .harness/runs)",
+    )
     args = parser.parse_args(args_list)
     if args.command == "run":
         _run(args, parser)
@@ -156,6 +167,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         "coding": args.coding,
         "auto_approve": args.auto_approve,
         "context_strategy": args.context_strategy,
+        "session_id": args.session,
     }
     try:
         commit = subprocess.check_output(
@@ -187,6 +199,8 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             recorder=recorder,
             manifest=manifest,
             context_strategy=args.context_strategy,
+            session_id=args.session,
+            memory_dir=args.memory_dir,
         )
     except ValueError as exc:
         parser.error(str(exc))
