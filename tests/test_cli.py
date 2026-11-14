@@ -770,3 +770,63 @@ def test_cli_reports_verified_completion_and_diff(monkeypatch, tmp_path, capsys)
     assert "candidate_diff:" in captured.err
     assert "tests_executed=1" in captured.err
     assert captured.out.strip() == "Bug fixed and verified"
+
+
+def test_session_command_reuses_working_memory_across_turns(
+    monkeypatch, tmp_path, capsys
+):
+    from harness import cli
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "app.py").write_text("VALUE = 42\n", encoding="utf-8")
+    memory_dir = tmp_path / ".harness" / "runs"
+
+    turns = iter(["Find VALUE in app.py", "What was VALUE?", "/exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(turns))
+
+    prompts: list[str] = []
+    responses = iter(
+        [
+            ChatResponse(
+                json.dumps(
+                    {
+                        "kind": "tool",
+                        "name": "update_context",
+                        "arguments": {
+                            "operation": "replace",
+                            "target": "working.md",
+                            "content": "# Working Context\n- VALUE is 42 in app.py:1\n",
+                        },
+                    }
+                )
+            ),
+            ChatResponse(
+                json.dumps({"kind": "complete", "summary": "Saved VALUE=42."})
+            ),
+            ChatResponse(json.dumps({"kind": "complete", "summary": "VALUE is 42."})),
+        ]
+    )
+
+    def fake_chat(prompt, **_kwargs):
+        prompts.append(prompt)
+        return next(responses)
+
+    monkeypatch.setattr(cli, "chat", fake_chat)
+    cli.main(
+        [
+            "session",
+            "--repo",
+            str(repo),
+            "--session",
+            "chat-demo",
+            "--memory-dir",
+            str(memory_dir),
+            "--no-db",
+        ]
+    )
+    captured = capsys.readouterr()
+    assert "Saved VALUE=42." in captured.out
+    assert "VALUE is 42." in captured.out
+    assert "VALUE is 42 in app.py:1" in prompts[-1]
+    assert (memory_dir / "chat-demo" / "working.md").exists()
