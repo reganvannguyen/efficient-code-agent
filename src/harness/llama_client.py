@@ -81,8 +81,12 @@ def chat(
     }
     if response_schema is not None:
         request_payload["response_format"] = {
-            "type": "json_object",
-            "schema": response_schema,
+            "type": "json_schema",
+            "json_schema": {
+                "name": "agent_action",
+                "strict": True,
+                "schema": response_schema,
+            },
         }
     payload = json.dumps(request_payload).encode("utf-8")
     request = Request(

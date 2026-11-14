@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import shutil
 import time
 import uuid
@@ -10,11 +11,13 @@ from pathlib import Path
 
 from harness.agent.events import BenchmarkOutcome
 from harness.agent.runtime import (
+    CODING_SYSTEM_PROMPT,
     DEFAULT_MAX_MODEL_CALLS,
     DEFAULT_MAX_STEPS,
     DEFAULT_REQUEST_TIMEOUT,
     DEFAULT_RUN_TIMEOUT,
     Model,
+    action_schema,
     run_agent,
 )
 from harness.agent.state import AgentRun, RunStatus
@@ -108,6 +111,22 @@ def _run_oracle_tests(
     return True, "\n\n".join(outputs), False
 
 
+def _bind_chat_defaults(model: Model, policy: ToolPolicy) -> Model:
+    """Bind action_schema and CODING_SYSTEM_PROMPT when using harness.llama_client.chat."""
+    if model is chat:
+        return functools.partial(
+            chat,
+            response_schema=action_schema(policy),
+            system_prompt=CODING_SYSTEM_PROMPT,
+        )
+    if isinstance(model, functools.partial) and model.func is chat:
+        kwargs = dict(model.keywords)
+        kwargs.setdefault("response_schema", action_schema(policy))
+        kwargs.setdefault("system_prompt", CODING_SYSTEM_PROMPT)
+        return functools.partial(chat, *model.args, **kwargs)
+    return model
+
+
 def _write_artifacts_if_configured(
     artifacts_root: Path | None,
     run: AgentRun,
@@ -186,6 +205,7 @@ def evaluate_task(
         effective_policy = (
             policy if policy is not None else _default_agent_policy(manifest)
         )
+        bound_model = _bind_chat_defaults(model, effective_policy)
         memory_before = (
             sample_macos_memory(server_pid=server_pid) if collect_memory else None
         )
@@ -200,7 +220,7 @@ def evaluate_task(
         run = run_agent(
             manifest.agent_prompt(),
             agent_workspace,
-            model=model,
+            model=bound_model,
             max_model_calls=max_model_calls,
             max_steps=max_steps,
             request_timeout=request_timeout,
