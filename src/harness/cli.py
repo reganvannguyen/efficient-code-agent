@@ -63,6 +63,12 @@ def main(argv: list[str] | None = None) -> None:
         action="store_true",
         help="disable SQLite trace persistence",
     )
+    run_parser.add_argument(
+        "--context-strategy",
+        choices=["bounded_history", "editable_context"],
+        default="bounded_history",
+        help="prompt assembly context strategy (default: bounded_history)",
+    )
     args = parser.parse_args(args_list)
     if args.command == "run":
         _run(args, parser)
@@ -149,6 +155,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
         "max_steps": args.max_steps,
         "coding": args.coding,
         "auto_approve": args.auto_approve,
+        "context_strategy": args.context_strategy,
     }
     try:
         commit = subprocess.check_output(
@@ -179,6 +186,7 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             approve=approve,
             recorder=recorder,
             manifest=manifest,
+            context_strategy=args.context_strategy,
         )
     except ValueError as exc:
         parser.error(str(exc))

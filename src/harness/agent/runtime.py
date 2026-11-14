@@ -18,6 +18,12 @@ from harness.agent.verification import (
     NoProgressTracker,
     evaluate_verification,
 )
+from harness.context import (
+    BoundedHistoryStrategy,
+    ContextInput,
+    ContextStrategy,
+    resolve_context_strategy,
+)
 from harness.llama_client import (
     ChatResponse,
     LlamaClientError,
@@ -217,6 +223,7 @@ def run_agent(
     on_event: Callable[[RunEvent], None] | None = None,
     recorder: RunRecorder | None = None,
     manifest: dict[str, object] | None = None,
+    context_strategy: ContextStrategy | str | None = None,
 ) -> AgentRun:
     """Run a cooperative, bounded tool loop for one repository task.
 
@@ -283,9 +290,30 @@ def run_agent(
                 pass
         return event
 
+    strategy = resolve_context_strategy(context_strategy)
+    effective_manifest: dict[str, object] | None = (
+        dict(manifest) if manifest is not None else None
+    )
+    run_started_data: dict[str, object] = {
+        "task": task,
+        "workspace": str(root),
+        "max_model_calls": max_model_calls,
+        "max_steps": max_steps,
+        "run_timeout": run_timeout,
+    }
+    if context_strategy is not None:
+        if effective_manifest is None:
+            effective_manifest = {}
+        effective_manifest.setdefault("context_strategy", strategy.name)
+        effective_manifest.setdefault(
+            "context_strategy_parameters", strategy.parameters()
+        )
+        run_started_data["context_strategy"] = strategy.name
+        run_started_data["context_strategy_parameters"] = strategy.parameters()
+
     if recorder is not None:
         try:
-            recorder.on_run_started(run, manifest=manifest)
+            recorder.on_run_started(run, manifest=effective_manifest)
         except Exception:
             if getattr(recorder, "policy", None) == LoggingPolicy.FAIL:
                 raise
@@ -293,13 +321,7 @@ def run_agent(
     emit(
         RunEventType.RUN_STARTED,
         step=0,
-        data={
-            "task": task,
-            "workspace": str(root),
-            "max_model_calls": max_model_calls,
-            "max_steps": max_steps,
-            "run_timeout": run_timeout,
-        },
+        data=run_started_data,
     )
 
     no_progress_tracker = NoProgressTracker(
@@ -321,11 +343,29 @@ def run_agent(
                 _stop(run, RunStatus.LIMIT_REACHED, "model_call_limit", emit)
                 return run
 
-            prompt = (
-                _build_prompt(task, history, max_prompt_bytes, policy=policy)
-                if policy is not None
-                else _build_prompt(task, history, max_prompt_bytes)
-            )
+            if isinstance(strategy, BoundedHistoryStrategy):
+                prompt = (
+                    _build_prompt(task, history, max_prompt_bytes, policy=policy)
+                    if policy is not None
+                    else _build_prompt(task, history, max_prompt_bytes)
+                )
+            else:
+                if policy is None:
+                    instructions, directive = _INSTRUCTIONS, _NEXT_ACTION
+                else:
+                    instructions, directive = _coding_prompt(policy)
+                prompt = strategy.build_prompt(
+                    ContextInput(
+                        instructions=instructions,
+                        directive=directive,
+                        task=task,
+                        history=history,
+                        byte_limit=max_prompt_bytes,
+                        run_status=run.status.value,
+                        steps=run.steps,
+                        recent_events=tuple(run.events[-10:]),
+                    )
+                )
             stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
@@ -955,20 +995,15 @@ def _build_prompt(
         instructions, directive = _INSTRUCTIONS, _NEXT_ACTION
     else:
         instructions, directive = _coding_prompt(policy)
-    pinned = f"{instructions}\nOriginal task (immutable):\n{task}"
-    while True:
-        prompt = pinned
-        if history:
-            prompt += (
-                "\n\nAction and observation history (JSON exchanges, oldest first):\n"
-            )
-            prompt += "\n".join(history)
-        prompt += "\n\nNext action:\n" + directive
-        if len(prompt.encode("utf-8")) <= byte_limit:
-            return prompt
-        if len(history) <= 1:
-            return None
-        del history[0]
+    return BoundedHistoryStrategy().build_prompt(
+        ContextInput(
+            instructions=instructions,
+            directive=directive,
+            task=task,
+            history=history,
+            byte_limit=byte_limit,
+        )
+    )
 
 
 def _coding_prompt(policy: ToolPolicy) -> tuple[str, str]:
