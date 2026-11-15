@@ -422,6 +422,8 @@ def run_agent(
     no_progress_tracker = NoProgressTracker(
         max_repetitions=DEFAULT_MAX_NO_PROGRESS_REPETITIONS
     )
+    checked_findings: set[str] = set()
+    findings_gate_triggered = False
     in_memory_note: str | None = (
         ""
         if memory_store is None and not isinstance(strategy, BoundedHistoryStrategy)
@@ -455,7 +457,11 @@ def run_agent(
                 else:
                     instructions, directive = _coding_prompt(policy)
                 instructions += _CONTEXT_EDIT_INSTRUCTIONS
-                directive += " You may also use name=update_context to update working.md when needed."
+                directive += (
+                    " You may also use name=update_context to save findings or"
+                    " name=read_memory to read Available memory notes when repo"
+                    " search returns empty."
+                )
                 task_notes = (
                     memory_store.read_note("working.md")
                     if memory_store is not None
@@ -549,6 +555,29 @@ def run_agent(
                     continue
 
                 no_progress_tracker.reset()
+                if (
+                    not isinstance(strategy, BoundedHistoryStrategy)
+                    and memory_store is not None
+                    and not checked_findings
+                    and not findings_gate_triggered
+                ):
+                    unread_findings = memory_store.list_findings()
+                    if unread_findings:
+                        findings_gate_triggered = True
+                        history.append(
+                            _exchange(
+                                {"kind": "complete", "summary": action.summary},
+                                {
+                                    "error": (
+                                        "Unread session findings exist: "
+                                        + ", ".join(unread_findings)
+                                        + ". Call read_memory on relevant findings before completing."
+                                    ),
+                                    "rejection": "unread_findings",
+                                },
+                            )
+                        )
+                        continue
                 run.verification_quality = quality
                 run.final_response = action.summary
                 if session_id is not None and memory_store is not None:
@@ -570,10 +599,40 @@ def run_agent(
                         expected_scope_id=session_id or run.run_id,
                         emit=emit,
                     )
+                    target_arg = action.arguments.get("target")
+                    if (
+                        result.get("ok")
+                        and isinstance(target_arg, str)
+                        and target_arg.startswith("findings/")
+                    ):
+                        checked_findings.add(target_arg)
                 else:
                     result = _execute_runtime_tool(
                         run, action, root, policy, approve, cancelled, deadline, emit
                     )
+                    if (
+                        not isinstance(strategy, BoundedHistoryStrategy)
+                        and memory_store is not None
+                        and action.name == "read_file"
+                        and result.get("error_code") == "not_found"
+                    ):
+                        requested_path = action.arguments.get("path")
+                        available_notes = {
+                            "working.md",
+                            "task.md",
+                            *memory_store.list_findings(),
+                        }
+                        if (
+                            isinstance(requested_path, str)
+                            and requested_path in available_notes
+                        ):
+                            result = {
+                                **result,
+                                "hint": (
+                                    f"'{requested_path}' is a session memory note, not a repo file. "
+                                    f'Use {{"kind":"tool","name":"read_memory","arguments":{{"target":"{requested_path}"}}}}.'
+                                ),
+                            }
                 if run.status in {
                     RunStatus.CANCELLED,
                     RunStatus.FAILED,
@@ -628,6 +687,8 @@ def run_agent(
                 )
                 if result.get("accepted"):
                     invalid_streak = 0
+                    if action.target.startswith("findings/"):
+                        checked_findings.add(action.target)
                     if no_progress_tracker.record_action(
                         "context_edit",
                         {

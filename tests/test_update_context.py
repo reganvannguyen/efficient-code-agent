@@ -298,3 +298,67 @@ def test_update_context_can_create_findings_and_surfaces_memory_index(
     assert "findings/auth.md" in prompts[1]
     store = WorkingMemoryStore(memory_dir, run.run_id)
     assert "Token leeway is 45s." in store.read_note("findings/auth.md")
+
+
+def test_complete_gated_once_when_unread_findings_exist(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    memory_dir = tmp_path / ".harness" / "runs"
+    store = WorkingMemoryStore(memory_dir, "sess-gate")
+    store.write_note("findings/cache-limit.md", "CACHE_MAX_ENTRIES = 512\n")
+    prompts: list[str] = []
+
+    actions = iter(
+        [
+            {"kind": "complete", "summary": "Not found."},
+            {
+                "kind": "tool",
+                "name": "read_memory",
+                "arguments": {"target": "findings/cache-limit.md"},
+            },
+            {"kind": "complete", "summary": "CACHE_MAX_ENTRIES is 512."},
+        ]
+    )
+
+    def model(prompt: str, *, timeout: float) -> ChatResponse:
+        prompts.append(prompt)
+        return _resp(next(actions))
+
+    run = run_agent(
+        "Find CACHE_MAX_ENTRIES",
+        repo,
+        model=model,
+        context_strategy="editable_context",
+        session_id="sess-gate",
+        memory_dir=memory_dir,
+    )
+    assert run.status == RunStatus.COMPLETED
+    assert run.final_response == "CACHE_MAX_ENTRIES is 512."
+    assert len(prompts) == 3
+    assert "unread_findings" in prompts[1]
+
+
+def test_complete_gate_triggers_at_most_once(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    memory_dir = tmp_path / ".harness" / "runs"
+    store = WorkingMemoryStore(memory_dir, "sess-gate-once")
+    store.write_note("findings/cache-limit.md", "CACHE_MAX_ENTRIES = 512\n")
+
+    actions = iter(
+        [
+            {"kind": "complete", "summary": "First attempt."},
+            {"kind": "complete", "summary": "Second attempt."},
+        ]
+    )
+
+    run = run_agent(
+        "Unrelated question",
+        repo,
+        model=lambda prompt, *, timeout: _resp(next(actions)),
+        context_strategy="editable_context",
+        session_id="sess-gate-once",
+        memory_dir=memory_dir,
+    )
+    assert run.status == RunStatus.COMPLETED
+    assert run.final_response == "Second attempt."
