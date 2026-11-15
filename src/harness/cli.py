@@ -180,6 +180,11 @@ def _prepare_agent_runtime(
         )
         prompt = CODING_SYSTEM_PROMPT
         approve = None if args.auto_approve else _approve_in_terminal
+    if args.context_strategy == "editable_context" and not args.coding:
+        prompt += (
+            " You also have update_context and read_memory tools for session memory"
+            " notes."
+        )
     model = partial(
         chat,
         base_url=args.base_url,
