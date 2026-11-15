@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -24,6 +25,8 @@ class ContextInput:
     repo_excerpts: tuple[str, ...] = ()
     task_notes: str | None = None
     memory_index: tuple[str, ...] = ()
+    token_limit: int | None = None
+    token_counter: Callable[[str], int] | None = None
 
 
 @runtime_checkable

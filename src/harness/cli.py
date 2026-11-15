@@ -11,6 +11,7 @@ import uuid
 from functools import partial
 from pathlib import Path
 
+from harness.agent.events import RunEventType
 from harness.agent.runtime import (
     CODING_SYSTEM_PROMPT,
     DEFAULT_MAX_PROMPT_BYTES,
@@ -19,6 +20,7 @@ from harness.agent.runtime import (
     run_agent,
 )
 from harness.agent.state import RunStatus
+from harness.context import LlamaTokenCounter, TokenBudget
 from harness.llama_client import ChatResponse, LlamaClientError, chat
 from harness.storage.database import SqliteRunRecorder
 from harness.tools.policy import ApprovalRequest, ToolMode, ToolPolicy
@@ -69,6 +71,18 @@ def _add_agent_options(
         type=Path,
         default=Path(".harness/runs"),
         help="base directory for run-scoped working memory (default: .harness/runs)",
+    )
+    subparser.add_argument(
+        "--context-window",
+        type=int,
+        default=None,
+        help="optional model context window in tokens to enforce TokenBudget",
+    )
+    subparser.add_argument(
+        "--max-tool-output-bytes",
+        type=int,
+        default=None,
+        help="optional byte cap for each tool result stored in prompt history",
     )
 
 
@@ -236,6 +250,19 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     )
 
     try:
+        token_budget = (
+            TokenBudget(
+                context_window=args.context_window,
+                output_reserve=args.max_tokens,
+            )
+            if args.context_window is not None
+            else None
+        )
+        token_counter = (
+            LlamaTokenCounter(base_url=args.base_url)
+            if token_budget is not None
+            else None
+        )
         run = run_agent(
             args.task,
             args.repo,
@@ -252,6 +279,9 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             context_strategy=args.context_strategy,
             session_id=args.session,
             memory_dir=args.memory_dir,
+            token_budget=token_budget,
+            token_counter=token_counter,
+            max_tool_output_bytes=args.max_tool_output_bytes,
         )
     except ValueError as exc:
         parser.error(str(exc))
@@ -285,6 +315,14 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             f"harness: tokens=prompt:{run.total_prompt_tokens or 0},"
             f"completion:{run.total_completion_tokens or 0},"
             f"total:{run.total_tokens}",
+            file=sys.stderr,
+        )
+    pruned_events = [
+        e for e in run.events if e.event_type == RunEventType.CONTEXT_PRUNED
+    ]
+    if pruned_events:
+        print(
+            f"harness: context_pruned={len(pruned_events)}",
             file=sys.stderr,
         )
     print(f"harness: verification={run.verification_quality.value}", file=sys.stderr)
@@ -378,6 +416,7 @@ _STOP_DETAILS = {
     "step_limit": "step limit reached",
     "invalid_action_limit": "invalid action limit reached",
     "prompt_budget": "prompt byte limit reached",
+    "context_budget_exceeded": "protected content exceeds context budget",
     "model_output_limit": "model output limit reached",
     "run_timeout": "run deadline reached",
     "model_timeout": "model request timed out",

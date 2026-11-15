@@ -141,3 +141,65 @@ def _usage_count(usage: object, key: str) -> int | None:
         return None
     value = usage.get(key)
     return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def tokenize(
+    content: str,
+    *,
+    base_url: str = "http://127.0.0.1:9931",
+    timeout: float = 10.0,
+) -> list[int]:
+    """Tokenize text using the llama.cpp server's /tokenize endpoint."""
+    if not isinstance(content, str):
+        raise ValueError("content must be a string")
+    if (
+        not isinstance(timeout, (int, float))
+        or not math.isfinite(timeout)
+        or timeout <= 0
+    ):
+        raise ValueError("timeout must be a finite positive number")
+    if not content:
+        return []
+
+    payload = json.dumps({"content": content}).encode("utf-8")
+    request = Request(
+        f"{base_url.rstrip('/')}/tokenize",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read(MAX_RESPONSE_BODY_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BODY_BYTES:
+                raise LlamaResponseTooLargeError(
+                    "tokenize response body exceeded 1 MiB"
+                )
+    except HTTPError as exc:
+        raise LlamaClientError(f"model server returned HTTP {exc.code}") from exc
+    except (URLError, TimeoutError, OSError, HTTPException) as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(exc, TimeoutError) or isinstance(reason, TimeoutError):
+            raise LlamaTimeoutError(f"tokenize request timed out: {reason}") from exc
+        raise LlamaTransportError(f"could not reach model server: {reason}") from exc
+
+    try:
+        data = json.loads(body)
+        tokens = data["tokens"]
+        if not isinstance(tokens, list) or not all(
+            isinstance(item, int) and not isinstance(item, bool) for item in tokens
+        ):
+            raise TypeError("tokens must be a list of integers")
+        return tokens
+    except (
+        json.JSONDecodeError,
+        UnicodeDecodeError,
+        ValueError,
+        KeyError,
+        TypeError,
+        RecursionError,
+    ) as exc:
+        raise LlamaClientError(
+            "model server returned a malformed tokenize response"
+        ) from exc
