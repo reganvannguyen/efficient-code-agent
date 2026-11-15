@@ -1,5 +1,13 @@
 """Swappable prompt-assembly context strategies."""
 
+from harness.context.budgeting import (
+    LlamaTokenCounter,
+    PromptPruningReport,
+    TokenBudget,
+    TokenCounter,
+    estimate_tokens,
+    resolve_token_counter,
+)
 from harness.context.memory import (
     DEFAULT_MAX_NOTE_BYTES,
     DEFAULT_MEMORY_BASE_DIR,
@@ -23,8 +31,14 @@ __all__ = [
     "DEFAULT_MEMORY_BASE_DIR",
     "DEFAULT_READ_MEMORY_MAX_BYTES",
     "EditableContextStrategy",
+    "LlamaTokenCounter",
     "MemoryStorageError",
+    "PromptPruningReport",
+    "TokenBudget",
+    "TokenCounter",
     "WorkingMemoryStore",
+    "estimate_tokens",
     "resolve_context_strategy",
+    "resolve_token_counter",
     "validate_scope_id",
 ]

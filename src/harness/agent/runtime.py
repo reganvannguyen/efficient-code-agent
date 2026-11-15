@@ -30,8 +30,12 @@ from harness.context import (
     ContextInput,
     ContextStrategy,
     MemoryStorageError,
+    PromptPruningReport,
+    TokenBudget,
+    TokenCounter,
     WorkingMemoryStore,
     resolve_context_strategy,
+    resolve_token_counter,
 )
 from harness.llama_client import (
     ChatResponse,
@@ -296,6 +300,10 @@ def run_agent(
     context_strategy: ContextStrategy | str | None = None,
     session_id: str | None = None,
     memory_dir: Path | None = None,
+    token_budget: TokenBudget | None = None,
+    token_counter: TokenCounter | Callable[[str], int] | None = None,
+    max_tool_output_bytes: int | None = None,
+    tool_artifacts_dir: Path | None = None,
 ) -> AgentRun:
     """Run a cooperative, bounded tool loop for one repository task.
 
@@ -363,6 +371,23 @@ def run_agent(
         return event
 
     strategy = resolve_context_strategy(context_strategy)
+    if token_budget is not None and not isinstance(token_budget, TokenBudget):
+        raise ValueError("token_budget must be a TokenBudget or None")
+    if max_tool_output_bytes is not None and (
+        not isinstance(max_tool_output_bytes, int)
+        or isinstance(max_tool_output_bytes, bool)
+        or max_tool_output_bytes <= 0
+    ):
+        raise ValueError("max_tool_output_bytes must be a positive integer or None")
+    resolved_token_counter = (
+        resolve_token_counter(token_counter)
+        if (token_budget is not None or token_counter is not None)
+        else None
+    )
+    token_limit = token_budget.input_budget if token_budget is not None else None
+    effective_tool_artifacts_dir = tool_artifacts_dir or (
+        memory_dir / "tool_outputs" if memory_dir is not None else None
+    )
     memory_store: WorkingMemoryStore | None = None
     if memory_dir is not None:
         memory_store = WorkingMemoryStore(memory_dir, scope_id=session_id or run.run_id)
@@ -445,12 +470,34 @@ def run_agent(
                 _stop(run, RunStatus.LIMIT_REACHED, "model_call_limit", emit)
                 return run
 
-            if isinstance(strategy, BoundedHistoryStrategy):
+            pruning_report: PromptPruningReport | None = None
+            if (
+                isinstance(strategy, BoundedHistoryStrategy)
+                and token_limit is None
+                and resolved_token_counter is None
+            ):
                 prompt = (
                     _build_prompt(task, history, max_prompt_bytes, policy=policy)
                     if policy is not None
                     else _build_prompt(task, history, max_prompt_bytes)
                 )
+            elif isinstance(strategy, BoundedHistoryStrategy):
+                if policy is None:
+                    instructions, directive = _INSTRUCTIONS, _NEXT_ACTION
+                else:
+                    instructions, directive = _coding_prompt(policy)
+                ctx_input = ContextInput(
+                    instructions=instructions,
+                    directive=directive,
+                    task=task,
+                    history=history,
+                    byte_limit=max_prompt_bytes,
+                    run_status=run.status.value,
+                    steps=run.steps,
+                    token_limit=token_limit,
+                    token_counter=resolved_token_counter,
+                )
+                prompt, pruning_report = strategy.build_prompt_with_report(ctx_input)
             else:
                 if policy is None:
                     instructions, directive = _INSTRUCTIONS, _NEXT_ACTION
@@ -472,25 +519,42 @@ def run_agent(
                     if memory_store is not None
                     else ("working.md",)
                 )
-                prompt = strategy.build_prompt(
-                    ContextInput(
-                        instructions=instructions,
-                        directive=directive,
-                        task=task,
-                        history=history,
-                        byte_limit=max_prompt_bytes,
-                        run_status=run.status.value,
-                        steps=run.steps,
-                        recent_events=tuple(run.events[-10:]),
-                        task_notes=task_notes,
-                        memory_index=memory_index,
+                ctx_input = ContextInput(
+                    instructions=instructions,
+                    directive=directive,
+                    task=task,
+                    history=history,
+                    byte_limit=max_prompt_bytes,
+                    run_status=run.status.value,
+                    steps=run.steps,
+                    recent_events=tuple(run.events[-10:]),
+                    task_notes=task_notes,
+                    memory_index=memory_index,
+                    token_limit=token_limit,
+                    token_counter=resolved_token_counter,
+                )
+                if hasattr(strategy, "build_prompt_with_report"):
+                    prompt, pruning_report = strategy.build_prompt_with_report(
+                        ctx_input
                     )
+                else:
+                    prompt = strategy.build_prompt(ctx_input)
+            if pruning_report is not None and pruning_report.pruned:
+                emit(
+                    RunEventType.CONTEXT_PRUNED,
+                    step=run.steps,
+                    data=pruning_report.to_dict(),
                 )
             stop = _boundary_stop(run, cancelled, deadline, emit)
             if stop:
                 return stop
             if prompt is None:
-                _stop(run, RunStatus.LIMIT_REACHED, "prompt_budget", emit)
+                stop_reason = (
+                    pruning_report.exceeded_reason
+                    if pruning_report is not None and pruning_report.exceeded_reason
+                    else "prompt_budget"
+                )
+                _stop(run, RunStatus.LIMIT_REACHED, stop_reason, emit)
                 return run
             response = _request_model(
                 run,
@@ -657,6 +721,13 @@ def run_agent(
                         )
                         _stop(run, RunStatus.LIMIT_REACHED, "no_progress", emit)
                         return run
+                history_observation = _bound_tool_result_for_history(
+                    result,
+                    step=run.steps,
+                    tool_name=action.name,
+                    max_bytes=max_tool_output_bytes,
+                    artifacts_dir=effective_tool_artifacts_dir,
+                )
                 history.append(
                     _exchange(
                         {
@@ -664,7 +735,7 @@ def run_agent(
                             "name": action.name,
                             "arguments": action.arguments,
                         },
-                        result,
+                        history_observation,
                     )
                 )
                 if invalid_streak >= max_consecutive_invalid_actions:
@@ -1560,3 +1631,41 @@ def _record_session_turn_summary(
 def _utf8_excerpt(value: str, byte_limit: int) -> str:
     raw = value.encode("utf-8", errors="replace")[:byte_limit]
     return raw.decode("utf-8", errors="ignore")
+
+
+def _bound_tool_result_for_history(
+    result: dict[str, object],
+    *,
+    step: int,
+    tool_name: str,
+    max_bytes: int | None,
+    artifacts_dir: Path | None,
+) -> dict[str, object]:
+    """Cap oversized tool results before prompt history insertion, saving full trace if configured."""
+    if max_bytes is None:
+        return result
+    serialized = json.dumps(result, ensure_ascii=True, separators=(",", ":"))
+    original_bytes = len(serialized.encode("utf-8"))
+    if original_bytes <= max_bytes:
+        return result
+
+    artifact_path: str | None = None
+    if artifacts_dir is not None:
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        safe_name = "".join(
+            ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in tool_name
+        )
+        target = artifacts_dir / f"step_{step:04d}_{safe_name}.json"
+        bounded_artifact = _utf8_excerpt(serialized, 1_048_576)
+        target.write_text(bounded_artifact, encoding="utf-8")
+        artifact_path = str(target)
+
+    bounded: dict[str, object] = {
+        "ok": result.get("ok"),
+        "truncated": True,
+        "original_bytes": original_bytes,
+        "excerpt": _utf8_excerpt(serialized, max(64, max_bytes - 160)),
+    }
+    if artifact_path is not None:
+        bounded["artifact_path"] = artifact_path
+    return bounded
