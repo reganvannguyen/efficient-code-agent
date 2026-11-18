@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "efficient-code-agent"
 version = "0.1.0"
 description = "A lightweight, local-first coding agent harness."
-dependencies = []
+dependencies = [
+    "tree-sitter>=0.23,<0.24",
+    "tree-sitter-python>=0.23,<0.24",
+]
 
 [project.scripts]
 harness = "harness.cli:main"

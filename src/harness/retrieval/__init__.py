@@ -15,6 +15,13 @@ from harness.retrieval.filtering import (
     MAX_CANDIDATE_FILE_BYTES,
     classify_candidate,
 )
+from harness.retrieval.python_symbols import (
+    PYTHON_EXTENSIONS,
+    PythonParseResult,
+    PythonSymbol,
+    extract_python_symbols_from_bytes,
+    parse_python_file,
+)
 
 __all__ = [
     "BINARY_EXTENSIONS",
@@ -25,7 +32,12 @@ __all__ = [
     "LexicalRetrievalBackend",
     "MAX_CANDIDATE_FILE_BYTES",
     "NormalizedRetrievalMatch",
+    "PYTHON_EXTENSIONS",
+    "PythonParseResult",
+    "PythonSymbol",
     "RetrievalBackend",
     "classify_candidate",
+    "extract_python_symbols_from_bytes",
+    "parse_python_file",
     "resolve_retrieval_backend",
 ]
