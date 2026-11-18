@@ -13,6 +13,13 @@ from harness.evaluation.config import (
     capture_host_info,
     compute_file_sha256,
 )
+from harness.evaluation.external import (
+    ExternalComparisonReport,
+    ExternalHarnessSpec,
+    compare_with_external_harness,
+    default_mini_swe_agent_spec,
+    evaluate_external_task,
+)
 from harness.evaluation.manifest import ManifestError, OracleTier, TaskManifest
 from harness.evaluation.protocol import (
     FrozenEvaluationProtocol,
@@ -51,6 +58,8 @@ __all__ = [
     "EvaluationResult",
     "EvaluationSetupError",
     "ExperimentConfig",
+    "ExternalComparisonReport",
+    "ExternalHarnessSpec",
     "FOUR_WAY_CONDITIONS",
     "FourWayAblationReport",
     "FrozenEvaluationProtocol",
@@ -69,8 +78,11 @@ __all__ = [
     "capture_workspace_patch",
     "compare_retrieval_modes",
     "compare_strategies",
+    "compare_with_external_harness",
     "compute_file_sha256",
     "compute_suite_digest",
+    "default_mini_swe_agent_spec",
+    "evaluate_external_task",
     "evaluate_suite",
     "evaluate_task",
     "load_suite_dir",
