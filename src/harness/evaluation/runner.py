@@ -6,10 +6,11 @@ import functools
 import shutil
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness.agent.events import BenchmarkOutcome
+from harness.agent.events import BenchmarkOutcome, RunEventType
 from harness.agent.runtime import (
     CODING_SYSTEM_PROMPT,
     DEFAULT_MAX_MODEL_CALLS,
@@ -21,6 +22,7 @@ from harness.agent.runtime import (
     run_agent,
 )
 from harness.agent.state import AgentRun, RunStatus
+from harness.context import ContextStrategy, TokenBudget, TokenCounter
 from harness.evaluation.config import ExperimentConfig
 from harness.evaluation.manifest import OracleTier, TaskManifest
 from harness.evaluation.resources import MemorySnapshot, sample_macos_memory
@@ -56,6 +58,15 @@ class EvaluationResult:
     experiment_config: ExperimentConfig | None = None
     memory_before: MemorySnapshot | None = None
     memory_after: MemorySnapshot | None = None
+    duration_seconds: float = 0.0
+    model_calls: int = 0
+    steps: int = 0
+    tool_calls: int = 0
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_tokens: int | None = None
+    context_edit_count: int = 0
+    context_pruned_count: int = 0
 
 
 def _default_agent_policy(manifest: TaskManifest) -> ToolPolicy:
@@ -111,17 +122,20 @@ def _run_oracle_tests(
     return True, "\n\n".join(outputs), False
 
 
-def _bind_chat_defaults(model: Model, policy: ToolPolicy) -> Model:
+def _bind_chat_defaults(
+    model: Model, policy: ToolPolicy, *, include_context_edit: bool = False
+) -> Model:
     """Bind action_schema and CODING_SYSTEM_PROMPT when using harness.llama_client.chat."""
+    schema = action_schema(policy, include_context_edit=include_context_edit)
     if model is chat:
         return functools.partial(
             chat,
-            response_schema=action_schema(policy),
+            response_schema=schema,
             system_prompt=CODING_SYSTEM_PROMPT,
         )
     if isinstance(model, functools.partial) and model.func is chat:
         kwargs = dict(model.keywords)
-        kwargs.setdefault("response_schema", action_schema(policy))
+        kwargs.setdefault("response_schema", schema)
         kwargs.setdefault("system_prompt", CODING_SYSTEM_PROMPT)
         return functools.partial(chat, *model.args, **kwargs)
     return model
@@ -176,6 +190,10 @@ def evaluate_task(
     experiment_config: ExperimentConfig | None = None,
     server_pid: int | None = None,
     collect_memory: bool = True,
+    context_strategy: ContextStrategy | str = "bounded_history",
+    token_budget: TokenBudget | None = None,
+    token_counter: TokenCounter | Callable[[str], int] | None = None,
+    max_tool_output_bytes: int | None = None,
 ) -> EvaluationResult:
     """Run one task in a fresh agent checkout and grade its patch in a separate checkout."""
     trial_dir = work_root / f"{manifest.task_id}_{uuid.uuid4().hex[:8]}"
@@ -205,7 +223,15 @@ def evaluate_task(
         effective_policy = (
             policy if policy is not None else _default_agent_policy(manifest)
         )
-        bound_model = _bind_chat_defaults(model, effective_policy)
+        strategy_name = (
+            context_strategy
+            if isinstance(context_strategy, str)
+            else context_strategy.name
+        )
+        include_context_edit = strategy_name != "bounded_history"
+        bound_model = _bind_chat_defaults(
+            model, effective_policy, include_context_edit=include_context_edit
+        )
         memory_before = (
             sample_macos_memory(server_pid=server_pid) if collect_memory else None
         )
@@ -217,6 +243,7 @@ def evaluate_task(
         if experiment_config is not None:
             run_manifest["experiment_config"] = experiment_config.to_dict()
 
+        run_memory_dir = trial_dir / "memory" if include_context_edit else None
         run = run_agent(
             manifest.agent_prompt(),
             agent_workspace,
@@ -228,6 +255,11 @@ def evaluate_task(
             policy=effective_policy,
             recorder=recorder,
             manifest=run_manifest,
+            context_strategy=context_strategy,
+            memory_dir=run_memory_dir,
+            token_budget=token_budget,
+            token_counter=token_counter,
+            max_tool_output_bytes=max_tool_output_bytes,
         )
         memory_after = (
             sample_macos_memory(server_pid=server_pid) if collect_memory else None
@@ -243,42 +275,67 @@ def evaluate_task(
                 memory_after=memory_after,
             )
 
+        tool_calls_count = sum(
+            1 for e in run.events if e.event_type == RunEventType.TOOL_REQUESTED
+        )
+        context_edit_count = sum(
+            1
+            for e in run.events
+            if e.event_type == RunEventType.CONTEXT_EDIT
+            and e.data.get("accepted") is True
+        )
+        context_pruned_count = sum(
+            1 for e in run.events if e.event_type == RunEventType.CONTEXT_PRUNED
+        )
+
+        def _build_result(
+            outcome: BenchmarkOutcome,
+            *,
+            oracle_passed: bool = False,
+            candidate_patch: str = "",
+            oracle_output: str = "",
+            error_detail: str | None = None,
+        ) -> EvaluationResult:
+            run.benchmark_outcome = outcome
+            artifacts = _artifacts()
+            return EvaluationResult(
+                task_id=manifest.task_id,
+                run_id=run.run_id,
+                outcome=outcome,
+                oracle_tier=manifest.oracle_tier,
+                oracle_passed=oracle_passed,
+                candidate_patch=candidate_patch,
+                oracle_output=oracle_output,
+                error_detail=error_detail,
+                agent_status=run.status,
+                artifacts=artifacts,
+                experiment_config=experiment_config,
+                memory_before=memory_before,
+                memory_after=memory_after,
+                duration_seconds=run.duration_seconds,
+                model_calls=run.model_calls,
+                steps=run.steps,
+                tool_calls=tool_calls_count,
+                prompt_tokens=run.total_prompt_tokens,
+                completion_tokens=run.total_completion_tokens,
+                total_tokens=run.total_tokens,
+                context_edit_count=context_edit_count,
+                context_pruned_count=context_pruned_count,
+            )
+
         try:
             candidate_patch = capture_workspace_patch(agent_workspace)
         except EvaluationSetupError as exc:
-            run.benchmark_outcome = BenchmarkOutcome.SETUP_ERROR
-            artifacts = _artifacts()
-            return EvaluationResult(
-                task_id=manifest.task_id,
-                run_id=run.run_id,
-                outcome=BenchmarkOutcome.SETUP_ERROR,
-                oracle_tier=manifest.oracle_tier,
-                oracle_passed=False,
-                candidate_patch="",
+            return _build_result(
+                BenchmarkOutcome.SETUP_ERROR,
                 error_detail=str(exc),
-                agent_status=run.status,
-                artifacts=artifacts,
-                experiment_config=experiment_config,
-                memory_before=memory_before,
-                memory_after=memory_after,
             )
 
         if run.status in (RunStatus.FAILED, RunStatus.CANCELLED):
-            run.benchmark_outcome = BenchmarkOutcome.AGENT_ERROR
-            artifacts = _artifacts()
-            return EvaluationResult(
-                task_id=manifest.task_id,
-                run_id=run.run_id,
-                outcome=BenchmarkOutcome.AGENT_ERROR,
-                oracle_tier=manifest.oracle_tier,
-                oracle_passed=False,
+            return _build_result(
+                BenchmarkOutcome.AGENT_ERROR,
                 candidate_patch=candidate_patch,
                 error_detail=run.stop_reason,
-                agent_status=run.status,
-                artifacts=artifacts,
-                experiment_config=experiment_config,
-                memory_before=memory_before,
-                memory_after=memory_after,
             )
 
         if not candidate_patch.strip():
@@ -287,21 +344,9 @@ def evaluate_task(
                 if run.status == RunStatus.LIMIT_REACHED
                 else BenchmarkOutcome.UNRESOLVED
             )
-            run.benchmark_outcome = outcome
-            artifacts = _artifacts()
-            return EvaluationResult(
-                task_id=manifest.task_id,
-                run_id=run.run_id,
-                outcome=outcome,
-                oracle_tier=manifest.oracle_tier,
-                oracle_passed=False,
-                candidate_patch="",
+            return _build_result(
+                outcome,
                 error_detail=run.stop_reason or "Agent produced no changes.",
-                agent_status=run.status,
-                artifacts=artifacts,
-                experiment_config=experiment_config,
-                memory_before=memory_before,
-                memory_after=memory_after,
             )
 
         try:
@@ -313,41 +358,19 @@ def evaluate_task(
                 timeout=setup_timeout,
             )
         except EvaluationSetupError as exc:
-            run.benchmark_outcome = BenchmarkOutcome.SETUP_ERROR
-            artifacts = _artifacts()
-            return EvaluationResult(
-                task_id=manifest.task_id,
-                run_id=run.run_id,
-                outcome=BenchmarkOutcome.SETUP_ERROR,
-                oracle_tier=manifest.oracle_tier,
-                oracle_passed=False,
+            return _build_result(
+                BenchmarkOutcome.SETUP_ERROR,
                 candidate_patch=candidate_patch,
                 error_detail=str(exc),
-                agent_status=run.status,
-                artifacts=artifacts,
-                experiment_config=experiment_config,
-                memory_before=memory_before,
-                memory_after=memory_after,
             )
 
         try:
             apply_patch(eval_workspace, candidate_patch)
         except PatchApplyError as exc:
-            run.benchmark_outcome = BenchmarkOutcome.UNRESOLVED
-            artifacts = _artifacts()
-            return EvaluationResult(
-                task_id=manifest.task_id,
-                run_id=run.run_id,
-                outcome=BenchmarkOutcome.UNRESOLVED,
-                oracle_tier=manifest.oracle_tier,
-                oracle_passed=False,
+            return _build_result(
+                BenchmarkOutcome.UNRESOLVED,
                 candidate_patch=candidate_patch,
                 error_detail=str(exc),
-                agent_status=run.status,
-                artifacts=artifacts,
-                experiment_config=experiment_config,
-                memory_before=memory_before,
-                memory_after=memory_after,
             )
 
         try:
@@ -358,21 +381,10 @@ def evaluate_task(
                 timeout=oracle_timeout,
             )
         except EvaluationSetupError as exc:
-            run.benchmark_outcome = BenchmarkOutcome.SETUP_ERROR
-            artifacts = _artifacts()
-            return EvaluationResult(
-                task_id=manifest.task_id,
-                run_id=run.run_id,
-                outcome=BenchmarkOutcome.SETUP_ERROR,
-                oracle_tier=manifest.oracle_tier,
-                oracle_passed=False,
+            return _build_result(
+                BenchmarkOutcome.SETUP_ERROR,
                 candidate_patch=candidate_patch,
                 error_detail=str(exc),
-                agent_status=run.status,
-                artifacts=artifacts,
-                experiment_config=experiment_config,
-                memory_before=memory_before,
-                memory_after=memory_after,
             )
 
         if oracle_passed:
@@ -382,21 +394,11 @@ def evaluate_task(
         else:
             outcome = BenchmarkOutcome.UNRESOLVED
 
-        run.benchmark_outcome = outcome
-        artifacts = _artifacts()
-        return EvaluationResult(
-            task_id=manifest.task_id,
-            run_id=run.run_id,
-            outcome=outcome,
-            oracle_tier=manifest.oracle_tier,
+        return _build_result(
+            outcome,
             oracle_passed=oracle_passed,
             candidate_patch=candidate_patch,
             oracle_output=oracle_output,
-            agent_status=run.status,
-            artifacts=artifacts,
-            experiment_config=experiment_config,
-            memory_before=memory_before,
-            memory_after=memory_after,
         )
     finally:
         if cleanup_workspaces and trial_dir.exists():

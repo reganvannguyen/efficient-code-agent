@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +16,7 @@ from harness.agent.runtime import (
     DEFAULT_RUN_TIMEOUT,
     Model,
 )
+from harness.context import ContextStrategy, TokenBudget, TokenCounter
 from harness.evaluation.config import ExperimentConfig
 from harness.evaluation.manifest import ManifestError, TaskManifest
 from harness.evaluation.runner import EvaluationResult, evaluate_task
@@ -74,6 +75,15 @@ class SuiteSummary:
                     "oracle_passed": r.oracle_passed,
                     "agent_status": r.agent_status.value if r.agent_status else None,
                     "error_detail": r.error_detail,
+                    "duration_seconds": r.duration_seconds,
+                    "model_calls": r.model_calls,
+                    "steps": r.steps,
+                    "tool_calls": r.tool_calls,
+                    "prompt_tokens": r.prompt_tokens,
+                    "completion_tokens": r.completion_tokens,
+                    "total_tokens": r.total_tokens,
+                    "context_edit_count": r.context_edit_count,
+                    "context_pruned_count": r.context_pruned_count,
                 }
                 for r in self.results
             ],
@@ -117,6 +127,10 @@ def evaluate_suite(
     experiment_config: ExperimentConfig | None = None,
     server_pid: int | None = None,
     collect_memory: bool = True,
+    context_strategy: ContextStrategy | str = "bounded_history",
+    token_budget: TokenBudget | None = None,
+    token_counter: TokenCounter | Callable[[str], int] | None = None,
+    max_tool_output_bytes: int | None = None,
 ) -> SuiteSummary:
     """Run all manifests sequentially on clean checkouts and return a SuiteSummary."""
     active_recorder = recorder
@@ -142,6 +156,10 @@ def evaluate_suite(
             experiment_config=experiment_config,
             server_pid=server_pid,
             collect_memory=collect_memory,
+            context_strategy=context_strategy,
+            token_budget=token_budget,
+            token_counter=token_counter,
+            max_tool_output_bytes=max_tool_output_bytes,
         )
         results.append(result)
 
@@ -157,3 +175,107 @@ def evaluate_suite(
             encoding="utf-8",
         )
     return summary
+
+
+@dataclass(frozen=True)
+class StrategyComparisonReport:
+    """Side-by-side Phase 5 comparison between bounded_history and editable_context."""
+
+    baseline: SuiteSummary
+    editable_context: SuiteSummary
+
+    def to_markdown(self) -> str:
+        """Render a transparent comparison table including negative results and overhead."""
+        b_map = {r.task_id: r for r in self.baseline.results}
+        e_map = {r.task_id: r for r in self.editable_context.results}
+        task_ids = [r.task_id for r in self.baseline.results]
+
+        lines = [
+            f"Baseline resolved: {self.baseline.resolved_count}/{len(self.baseline.results)} | "
+            f"Editable-context resolved: {self.editable_context.resolved_count}/{len(self.editable_context.results)}",
+            "",
+            "| Task ID | Baseline Outcome | Editable Outcome | Calls (B vs E) | Tool Calls (B vs E) | Prompt Tokens (B vs E) | Edits / Pruned (E) | Wall Time s (B vs E) |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        ]
+        for tid in task_ids:
+            b = b_map[tid]
+            e = e_map[tid]
+            b_tok = str(b.prompt_tokens) if b.prompt_tokens is not None else "-"
+            e_tok = str(e.prompt_tokens) if e.prompt_tokens is not None else "-"
+            lines.append(
+                f"| `{tid}` | `{b.outcome.value}` ({b.oracle_tier.value}) "
+                f"| `{e.outcome.value}` ({e.oracle_tier.value}) "
+                f"| {b.model_calls} vs {e.model_calls} "
+                f"| {b.tool_calls} vs {e.tool_calls} "
+                f"| {b_tok} vs {e_tok} "
+                f"| {e.context_edit_count} / {e.context_pruned_count} "
+                f"| {b.duration_seconds:.2f} vs {e.duration_seconds:.2f} |"
+            )
+        return "\n".join(lines) + "\n"
+
+
+def compare_strategies(
+    manifests: Sequence[TaskManifest],
+    *,
+    work_root: Path,
+    model: Model = chat,
+    artifacts_root: Path | None = None,
+    db_path: Path | None = None,
+    policy: ToolPolicy | None = None,
+    max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    run_timeout: float = DEFAULT_RUN_TIMEOUT,
+    oracle_timeout: float = 60.0,
+    setup_timeout: float = 120.0,
+    cleanup_workspaces: bool = True,
+    experiment_config: ExperimentConfig | None = None,
+    server_pid: int | None = None,
+    collect_memory: bool = True,
+    token_budget: TokenBudget | None = None,
+    token_counter: TokenCounter | Callable[[str], int] | None = None,
+    max_tool_output_bytes: int | None = None,
+) -> StrategyComparisonReport:
+    """Run bounded_history and editable_context under identical pinned settings."""
+    common_kwargs: dict[str, object] = {
+        "model": model,
+        "db_path": db_path,
+        "policy": policy,
+        "max_model_calls": max_model_calls,
+        "max_steps": max_steps,
+        "request_timeout": request_timeout,
+        "run_timeout": run_timeout,
+        "oracle_timeout": oracle_timeout,
+        "setup_timeout": setup_timeout,
+        "cleanup_workspaces": cleanup_workspaces,
+        "experiment_config": experiment_config,
+        "server_pid": server_pid,
+        "collect_memory": collect_memory,
+        "token_budget": token_budget,
+        "token_counter": token_counter,
+        "max_tool_output_bytes": max_tool_output_bytes,
+    }
+    baseline = evaluate_suite(
+        manifests,
+        work_root=work_root / "bounded_history",
+        artifacts_root=(artifacts_root / "bounded_history" if artifacts_root else None),
+        context_strategy="bounded_history",
+        **common_kwargs,  # type: ignore[arg-type]
+    )
+    editable = evaluate_suite(
+        manifests,
+        work_root=work_root / "editable_context",
+        artifacts_root=(
+            artifacts_root / "editable_context" if artifacts_root else None
+        ),
+        context_strategy="editable_context",
+        **common_kwargs,  # type: ignore[arg-type]
+    )
+    report = StrategyComparisonReport(baseline=baseline, editable_context=editable)
+    if artifacts_root is not None:
+        artifacts_root.mkdir(parents=True, exist_ok=True)
+        (artifacts_root / "strategy_comparison.md").write_text(
+            report.to_markdown(),
+            encoding="utf-8",
+        )
+    return report
