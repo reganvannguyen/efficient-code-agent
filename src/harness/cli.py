@@ -84,6 +84,12 @@ def _add_agent_options(
         default=None,
         help="optional byte cap for each tool result stored in prompt history",
     )
+    subparser.add_argument(
+        "--retrieval-mode",
+        choices=["lexical_only", "code_aware"],
+        default="lexical_only",
+        help="repository retrieval backend mode (default: lexical_only)",
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -282,6 +288,9 @@ def _run(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
             token_budget=token_budget,
             token_counter=token_counter,
             max_tool_output_bytes=args.max_tool_output_bytes,
+            retrieval_backend=(
+                args.retrieval_mode if args.retrieval_mode != "lexical_only" else None
+            ),
         )
     except ValueError as exc:
         parser.error(str(exc))

@@ -98,6 +98,7 @@ def execute_tool(
     approve: Callable[[ApprovalRequest], bool] | None = None,
     deadline: float | None = None,
     cancelled: Callable[[], bool] | None = None,
+    retrieval_backend: object | None = None,
 ) -> ToolResult:
     """Validate and run one repository tool request; edits require authorization."""
     if not isinstance(allow_edits, bool):
@@ -226,6 +227,16 @@ def execute_tool(
             return edit_file(root, action.arguments)
         if action.name == "run_tests":
             raise ToolFailure("permission_denied", "test execution requires a policy")
+
+        if retrieval_backend is not None:
+            from harness.retrieval.backend import resolve_retrieval_backend
+
+            backend = resolve_retrieval_backend(retrieval_backend)  # type: ignore[arg-type]
+            if action.name == "list_files":
+                return backend.list_files(root, action.arguments)
+            if action.name == "search_code":
+                return backend.search_code(root, action.arguments)
+            return backend.read_file(root, action.arguments)
 
         if action.name == "list_files":
             return list_files(root, action.arguments)
