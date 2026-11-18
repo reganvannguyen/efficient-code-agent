@@ -15,7 +15,6 @@ from harness.llama_client import ChatResponse
 from harness.retrieval import (
     CodeAwareRetrievalBackend,
     LexicalRetrievalBackend,
-    NormalizedRetrievalMatch,
     classify_candidate,
     resolve_retrieval_backend,
 )
@@ -103,17 +102,13 @@ def test_code_aware_backend_filters_candidates_and_normalizes_matches(
     assert aware_search.ok
     matches = aware_search.data["matches"]
     assert len(matches) == 1
-    assert (
-        matches[0]
-        == NormalizedRetrievalMatch(
-            path="app.py",
-            start_line=1,
-            end_line=1,
-            preview="def target_fn():",
-            truncated=False,
-            matched_reason="lexical_match",
-        ).to_dict()
-    )
+    assert matches[0]["path"] == "app.py"
+    assert matches[0]["start_line"] == 1
+    assert matches[0]["end_line"] == 2
+    assert matches[0]["preview"] == "def target_fn():"
+    assert matches[0]["matched_reason"] == "exact_symbol_definition"
+    assert matches[0]["symbol"] == "target_fn"
+    assert "1: def target_fn():" in str(matches[0]["snippet"])
 
     # Explicit authorized read of hidden file still works in code_aware mode
     hidden_read = execute_tool(
