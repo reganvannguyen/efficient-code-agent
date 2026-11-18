@@ -22,6 +22,10 @@ from harness.retrieval.python_symbols import (
     extract_python_symbols_from_bytes,
     parse_python_file,
 )
+from harness.retrieval.ranking import (
+    RankedSnippet,
+    rank_and_extract_snippets,
+)
 from harness.retrieval.repo_map import (
     CachedFileIndex,
     RepoMapResult,
@@ -41,11 +45,13 @@ __all__ = [
     "PYTHON_EXTENSIONS",
     "PythonParseResult",
     "PythonSymbol",
+    "RankedSnippet",
     "RepoMapResult",
     "RepoSymbolIndex",
     "RetrievalBackend",
     "classify_candidate",
     "extract_python_symbols_from_bytes",
     "parse_python_file",
+    "rank_and_extract_snippets",
     "resolve_retrieval_backend",
 ]

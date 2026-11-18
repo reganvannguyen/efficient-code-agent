@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from harness.retrieval.filtering import classify_candidate
+from harness.retrieval.ranking import (
+    DEFAULT_MAX_PER_FILE,
+    DEFAULT_MAX_SNIPPET_BYTES,
+    DEFAULT_MAX_TOTAL_BYTES,
+    rank_and_extract_snippets,
+)
 from harness.retrieval.repo_map import RepoSymbolIndex
 
 if TYPE_CHECKING:
@@ -92,6 +98,11 @@ class CodeAwareRetrievalBackend:
 
     mode: str = "code_aware"
     approved_overrides: tuple[str, ...] = ()
+    max_per_file: int = DEFAULT_MAX_PER_FILE
+    max_snippet_bytes: int = DEFAULT_MAX_SNIPPET_BYTES
+    max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES
+    max_total_tokens: int | None = None
+    token_counter: Callable[[str], int] | None = None
     _indexes: dict[Path, RepoSymbolIndex] = field(
         default_factory=dict, repr=False, compare=False
     )
@@ -146,42 +157,39 @@ class CodeAwareRetrievalBackend:
         from harness.tools.dispatcher import ToolResult
         from harness.tools.search import search_code
 
-        result = search_code(root, arguments)
+        max_results = int(arguments.get("max_results", 20))
+        broad_args = dict(arguments)
+        broad_args["max_results"] = max(max_results * 5, 50)
+        result = search_code(root, broad_args)
         raw_matches = result.data.get("matches")
         if not isinstance(raw_matches, list):
             return result
-        normalized: list[dict[str, object]] = []
-        skipped: list[dict[str, str]] = []
-        for entry in raw_matches:
-            if not isinstance(entry, dict):
-                continue
-            rel_path = str(entry.get("path", ""))
-            reason = _candidate_skip_reason(
-                root, rel_path, approved_overrides=self.approved_overrides
-            )
-            if reason is not None:
-                skipped.append({"path": rel_path, "reason": reason})
-                continue
-            line = int(entry.get("line", 1))
-            normalized.append(
-                NormalizedRetrievalMatch(
-                    path=rel_path,
-                    start_line=line,
-                    end_line=line,
-                    preview=str(entry.get("preview", "")),
-                    truncated=result.truncated,
-                    matched_reason="lexical_match",
-                ).to_dict()
-            )
+        query = str(arguments.get("query", ""))
+        glob_arg = arguments.get("glob")
+        glob_str = str(glob_arg) if glob_arg is not None else None
+        ranked, skipped, budget_truncated = rank_and_extract_snippets(
+            root,
+            query=query,
+            lexical_matches=[m for m in raw_matches if isinstance(m, dict)],
+            index=self.get_index(root),
+            glob=glob_str,
+            max_results=max_results,
+            max_per_file=self.max_per_file,
+            max_snippet_bytes=self.max_snippet_bytes,
+            max_total_bytes=self.max_total_bytes,
+            max_total_tokens=self.max_total_tokens,
+            token_counter=self.token_counter,
+            approved_overrides=self.approved_overrides,
+        )
         data = dict(result.data)
-        data["matches"] = normalized
+        data["matches"] = [item.to_dict() for item in ranked]
         if skipped:
             data["skipped"] = skipped
         return ToolResult(
             result.tool,
             result.ok,
             data,
-            truncated=result.truncated,
+            truncated=result.truncated or budget_truncated,
             message=result.message,
         )
 
