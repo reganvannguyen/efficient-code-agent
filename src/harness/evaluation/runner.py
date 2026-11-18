@@ -13,6 +13,7 @@ from pathlib import Path
 from harness.agent.events import BenchmarkOutcome, RunEventType
 from harness.agent.runtime import (
     CODING_SYSTEM_PROMPT,
+    DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS,
     DEFAULT_MAX_MODEL_CALLS,
     DEFAULT_MAX_STEPS,
     DEFAULT_REQUEST_TIMEOUT,
@@ -185,6 +186,7 @@ def evaluate_task(
     policy: ToolPolicy | None = None,
     max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
     max_steps: int = DEFAULT_MAX_STEPS,
+    max_consecutive_invalid_actions: int = DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     run_timeout: float = DEFAULT_RUN_TIMEOUT,
     oracle_timeout: float = 60.0,
@@ -259,6 +261,7 @@ def evaluate_task(
             model=bound_model,
             max_model_calls=max_model_calls,
             max_steps=max_steps,
+            max_consecutive_invalid_actions=max_consecutive_invalid_actions,
             request_timeout=request_timeout,
             run_timeout=run_timeout,
             policy=effective_policy,

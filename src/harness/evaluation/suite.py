@@ -10,6 +10,7 @@ from pathlib import Path
 
 from harness.agent.events import BenchmarkOutcome
 from harness.agent.runtime import (
+    DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS,
     DEFAULT_MAX_MODEL_CALLS,
     DEFAULT_MAX_STEPS,
     DEFAULT_REQUEST_TIMEOUT,
@@ -122,6 +123,7 @@ def evaluate_suite(
     policy: ToolPolicy | None = None,
     max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
     max_steps: int = DEFAULT_MAX_STEPS,
+    max_consecutive_invalid_actions: int = DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     run_timeout: float = DEFAULT_RUN_TIMEOUT,
     oracle_timeout: float = 60.0,
@@ -152,6 +154,7 @@ def evaluate_suite(
             policy=policy,
             max_model_calls=max_model_calls,
             max_steps=max_steps,
+            max_consecutive_invalid_actions=max_consecutive_invalid_actions,
             request_timeout=request_timeout,
             run_timeout=run_timeout,
             oracle_timeout=oracle_timeout,
@@ -229,6 +232,7 @@ def compare_strategies(
     policy: ToolPolicy | None = None,
     max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
     max_steps: int = DEFAULT_MAX_STEPS,
+    max_consecutive_invalid_actions: int = DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     run_timeout: float = DEFAULT_RUN_TIMEOUT,
     oracle_timeout: float = 60.0,
@@ -333,6 +337,7 @@ def compare_retrieval_modes(
     policy: ToolPolicy | None = None,
     max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
     max_steps: int = DEFAULT_MAX_STEPS,
+    max_consecutive_invalid_actions: int = DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS,
     request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
     run_timeout: float = DEFAULT_RUN_TIMEOUT,
     oracle_timeout: float = 60.0,
