@@ -34,6 +34,11 @@ from harness.evaluation.protocol import (
     verify_agent_prompt_isolation,
     verify_suite_partition_isolation,
 )
+from harness.evaluation.reporting import (
+    build_final_benchmark_report,
+    recheck_saved_patch,
+    validate_report_traceability,
+)
 from harness.evaluation.resources import (
     MemorySnapshot,
     parse_memory_pressure,
@@ -84,6 +89,7 @@ __all__ = [
     "TaskManifest",
     "aggregate_trial_reports",
     "apply_patch",
+    "build_final_benchmark_report",
     "capture_git_commit",
     "capture_host_info",
     "capture_workspace_patch",
@@ -101,10 +107,12 @@ __all__ = [
     "parse_ps_rss_kib",
     "parse_sysctl_swapusage",
     "prepare_clean_checkout",
+    "recheck_saved_patch",
     "restore_paths",
     "run_four_way_ablation",
     "run_repeated_ablations",
     "sample_macos_memory",
+    "validate_report_traceability",
     "verify_agent_prompt_isolation",
     "verify_suite_partition_isolation",
 ]
