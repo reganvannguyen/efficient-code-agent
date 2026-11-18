@@ -192,25 +192,25 @@ Test whether model-initiated editing of compact working notes improves coding su
 
 ### Implementation tasks
 
-- [ ] Extract the existing bounded-history prompt builder behind a small context-strategy interface.
-- [ ] Implement run-scoped Markdown storage for `working.md`, `task.md`, and optional `findings/`.
-- [ ] Keep original task and harness instructions immutable.
-- [ ] Add the model-facing `update_context` tool, normalized by the LLM adapter to the runtime's `context_edit` action, with validated `replace` and `append` operations.
-- [ ] Add bounded `read_memory` for selective findings retrieval when needed; defer a separate `save_memory` tool.
-- [ ] Use atomic writes and record accepted/rejected context edits.
-- [ ] Add model-compatible token counting and deterministic overflow handling.
-- [ ] Selectively assemble working notes, recent results, and relevant findings.
-- [ ] Log proactive context edits separately from fallback pruning.
-- [ ] Compare the editable-context strategy with the same baseline on development tasks.
+- [x] Extract the existing bounded-history prompt builder behind a small context-strategy interface.
+- [x] Implement run-scoped Markdown storage for `working.md`, `task.md`, and optional `findings/`.
+- [x] Keep original task and harness instructions immutable.
+- [x] Add the model-facing `update_context` tool, normalized by the LLM adapter to the runtime's `context_edit` action, with validated `replace` and `append` operations.
+- [x] Add bounded `read_memory` for selective findings retrieval when needed; defer a separate `save_memory` tool.
+- [x] Use atomic writes and record accepted/rejected context edits.
+- [x] Add model-compatible token counting and deterministic overflow handling.
+- [x] Selectively assemble working notes, recent results, and relevant findings.
+- [x] Log proactive context edits separately from fallback pruning.
+- [x] Compare the editable-context strategy with the same baseline on development tasks.
 
 ### Tests
 
-- [ ] Model can replace a disproven hypothesis with a confirmed finding.
-- [ ] Updated notes appear in a later prompt.
-- [ ] Immutable task/instructions cannot be modified through memory tools.
-- [ ] Oversized or out-of-scope edits are rejected.
-- [ ] Context never exceeds the configured input budget.
-- [ ] Run-specific notes do not leak into another task.
+- [x] Model can replace a disproven hypothesis with a confirmed finding.
+- [x] Updated notes appear in a later prompt.
+- [x] Immutable task/instructions cannot be modified through memory tools.
+- [x] Oversized or out-of-scope edits are rejected.
+- [x] Context never exceeds the configured input budget.
+- [x] Run-specific notes do not leak into another task.
 
 ### Deliverable
 
