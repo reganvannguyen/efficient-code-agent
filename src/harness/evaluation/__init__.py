@@ -6,6 +6,13 @@ from harness.evaluation.ablation import (
     FourWayAblationReport,
     run_four_way_ablation,
 )
+from harness.evaluation.analysis import (
+    ConditionAggregate,
+    MultiTrialAnalysis,
+    PairedTaskComparison,
+    aggregate_trial_reports,
+    run_repeated_ablations,
+)
 from harness.evaluation.config import (
     ExperimentConfig,
     ModelSpec,
@@ -55,6 +62,7 @@ from harness.evaluation.workspace import (
 
 __all__ = [
     "AblationCondition",
+    "ConditionAggregate",
     "EvaluationResult",
     "EvaluationSetupError",
     "ExperimentConfig",
@@ -66,12 +74,15 @@ __all__ = [
     "ManifestError",
     "MemorySnapshot",
     "ModelSpec",
+    "MultiTrialAnalysis",
     "OracleTier",
+    "PairedTaskComparison",
     "PatchApplyError",
     "RetrievalComparisonReport",
     "StrategyComparisonReport",
     "SuiteSummary",
     "TaskManifest",
+    "aggregate_trial_reports",
     "apply_patch",
     "capture_git_commit",
     "capture_host_info",
@@ -92,6 +103,7 @@ __all__ = [
     "prepare_clean_checkout",
     "restore_paths",
     "run_four_way_ablation",
+    "run_repeated_ablations",
     "sample_macos_memory",
     "verify_agent_prompt_isolation",
     "verify_suite_partition_isolation",
