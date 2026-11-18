@@ -22,9 +22,15 @@ from harness.retrieval.python_symbols import (
     extract_python_symbols_from_bytes,
     parse_python_file,
 )
+from harness.retrieval.repo_map import (
+    CachedFileIndex,
+    RepoMapResult,
+    RepoSymbolIndex,
+)
 
 __all__ = [
     "BINARY_EXTENSIONS",
+    "CachedFileIndex",
     "CodeAwareRetrievalBackend",
     "EXCLUDED_DIRS",
     "GENERATED_FILENAMES",
@@ -35,6 +41,8 @@ __all__ = [
     "PYTHON_EXTENSIONS",
     "PythonParseResult",
     "PythonSymbol",
+    "RepoMapResult",
+    "RepoSymbolIndex",
     "RetrievalBackend",
     "classify_candidate",
     "extract_python_symbols_from_bytes",
