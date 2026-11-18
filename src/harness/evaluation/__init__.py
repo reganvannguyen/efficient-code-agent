@@ -1,5 +1,11 @@
 """Fixture-based evaluation runner, configuration pinning, and resource sampling."""
 
+from harness.evaluation.ablation import (
+    FOUR_WAY_CONDITIONS,
+    AblationCondition,
+    FourWayAblationReport,
+    run_four_way_ablation,
+)
 from harness.evaluation.config import (
     ExperimentConfig,
     ModelSpec,
@@ -41,9 +47,12 @@ from harness.evaluation.workspace import (
 )
 
 __all__ = [
+    "AblationCondition",
     "EvaluationResult",
     "EvaluationSetupError",
     "ExperimentConfig",
+    "FOUR_WAY_CONDITIONS",
+    "FourWayAblationReport",
     "FrozenEvaluationProtocol",
     "ManifestError",
     "MemorySnapshot",
@@ -70,6 +79,7 @@ __all__ = [
     "parse_sysctl_swapusage",
     "prepare_clean_checkout",
     "restore_paths",
+    "run_four_way_ablation",
     "sample_macos_memory",
     "verify_agent_prompt_isolation",
     "verify_suite_partition_isolation",
