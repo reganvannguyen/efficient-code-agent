@@ -16,7 +16,13 @@ from harness.evaluation.resources import (
     sample_macos_memory,
 )
 from harness.evaluation.runner import EvaluationResult, evaluate_task
-from harness.evaluation.suite import SuiteSummary, evaluate_suite, load_suite_dir
+from harness.evaluation.suite import (
+    StrategyComparisonReport,
+    SuiteSummary,
+    compare_strategies,
+    evaluate_suite,
+    load_suite_dir,
+)
 from harness.evaluation.workspace import (
     EvaluationSetupError,
     PatchApplyError,
@@ -35,12 +41,14 @@ __all__ = [
     "ModelSpec",
     "OracleTier",
     "PatchApplyError",
+    "StrategyComparisonReport",
     "SuiteSummary",
     "TaskManifest",
     "apply_patch",
     "capture_git_commit",
     "capture_host_info",
     "capture_workspace_patch",
+    "compare_strategies",
     "compute_file_sha256",
     "evaluate_suite",
     "evaluate_task",
