@@ -45,6 +45,7 @@ from harness.llama_client import (
     LlamaTransportError,
     chat,
 )
+from harness.retrieval import RetrievalBackend, resolve_retrieval_backend
 from harness.storage.recorder import LoggingPolicy, RunRecorder
 from harness.tools.policy import (
     ApprovalRequest,
@@ -304,6 +305,7 @@ def run_agent(
     token_counter: TokenCounter | Callable[[str], int] | None = None,
     max_tool_output_bytes: int | None = None,
     tool_artifacts_dir: Path | None = None,
+    retrieval_backend: RetrievalBackend | str | None = None,
 ) -> AgentRun:
     """Run a cooperative, bounded tool loop for one repository task.
 
@@ -371,6 +373,11 @@ def run_agent(
         return event
 
     strategy = resolve_context_strategy(context_strategy)
+    resolved_retrieval = (
+        resolve_retrieval_backend(retrieval_backend)
+        if retrieval_backend is not None
+        else None
+    )
     if token_budget is not None and not isinstance(token_budget, TokenBudget):
         raise ValueError("token_budget must be a TokenBudget or None")
     if max_tool_output_bytes is not None and (
@@ -425,6 +432,11 @@ def run_agent(
         )
         run_started_data["context_strategy"] = strategy.name
         run_started_data["context_strategy_parameters"] = strategy.parameters()
+    if resolved_retrieval is not None:
+        if effective_manifest is None:
+            effective_manifest = {}
+        effective_manifest.setdefault("retrieval_mode", resolved_retrieval.mode)
+        run_started_data["retrieval_mode"] = resolved_retrieval.mode
     if session_id is not None:
         if effective_manifest is None:
             effective_manifest = {}
@@ -672,7 +684,15 @@ def run_agent(
                         checked_findings.add(target_arg)
                 else:
                     result = _execute_runtime_tool(
-                        run, action, root, policy, approve, cancelled, deadline, emit
+                        run,
+                        action,
+                        root,
+                        policy,
+                        approve,
+                        cancelled,
+                        deadline,
+                        emit,
+                        retrieval_backend=resolved_retrieval,
                     )
                     if (
                         not isinstance(strategy, BoundedHistoryStrategy)
@@ -843,6 +863,8 @@ def _execute_runtime_tool(
     cancelled: Callable[[], bool] | None,
     deadline: float,
     emit: Callable[..., RunEvent] | None = None,
+    *,
+    retrieval_backend: RetrievalBackend | None = None,
 ) -> dict[str, object]:
     """Delegate authorization/execution, then record audit data before stopping."""
     from harness.tools.dispatcher import execute_tool
@@ -864,8 +886,13 @@ def _execute_runtime_tool(
         )
     )
     start_mono = monotonic()
+    extra_kwargs: dict[str, object] = (
+        {"retrieval_backend": retrieval_backend}
+        if retrieval_backend is not None
+        else {}
+    )
     if policy is None:
-        result = execute_tool(action, root)
+        result = execute_tool(action, root, **extra_kwargs)  # type: ignore[arg-type]
     else:
         result = execute_tool(
             action,
@@ -874,6 +901,7 @@ def _execute_runtime_tool(
             approve=approval_callback,
             deadline=deadline,
             cancelled=cancelled,
+            **extra_kwargs,  # type: ignore[arg-type]
         )
     duration_ms = (monotonic() - start_mono) * 1000.0
     if emit is not None:
