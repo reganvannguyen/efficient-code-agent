@@ -21,6 +21,7 @@ from harness.evaluation.config import ExperimentConfig
 from harness.evaluation.manifest import ManifestError, TaskManifest
 from harness.evaluation.runner import EvaluationResult, evaluate_task
 from harness.llama_client import chat
+from harness.retrieval import RetrievalBackend
 from harness.storage.database import SqliteRunRecorder
 from harness.storage.recorder import RunRecorder
 from harness.tools.policy import ToolPolicy
@@ -84,6 +85,8 @@ class SuiteSummary:
                     "total_tokens": r.total_tokens,
                     "context_edit_count": r.context_edit_count,
                     "context_pruned_count": r.context_pruned_count,
+                    "retrieval_duration_ms": r.retrieval_duration_ms,
+                    "retrieval_parse_count": r.retrieval_parse_count,
                 }
                 for r in self.results
             ],
@@ -131,6 +134,7 @@ def evaluate_suite(
     token_budget: TokenBudget | None = None,
     token_counter: TokenCounter | Callable[[str], int] | None = None,
     max_tool_output_bytes: int | None = None,
+    retrieval_backend: RetrievalBackend | str | None = None,
 ) -> SuiteSummary:
     """Run all manifests sequentially on clean checkouts and return a SuiteSummary."""
     active_recorder = recorder
@@ -160,6 +164,7 @@ def evaluate_suite(
             token_budget=token_budget,
             token_counter=token_counter,
             max_tool_output_bytes=max_tool_output_bytes,
+            retrieval_backend=retrieval_backend,
         )
         results.append(result)
 
@@ -275,6 +280,109 @@ def compare_strategies(
     if artifacts_root is not None:
         artifacts_root.mkdir(parents=True, exist_ok=True)
         (artifacts_root / "strategy_comparison.md").write_text(
+            report.to_markdown(),
+            encoding="utf-8",
+        )
+    return report
+
+
+@dataclass(frozen=True)
+class RetrievalComparisonReport:
+    """Side-by-side Phase 6 comparison between lexical_only and code_aware."""
+
+    lexical_only: SuiteSummary
+    code_aware: SuiteSummary
+
+    def to_markdown(self) -> str:
+        """Render a transparent retrieval comparison table with timing and parse overhead."""
+        l_map = {r.task_id: r for r in self.lexical_only.results}
+        c_map = {r.task_id: r for r in self.code_aware.results}
+        task_ids = [r.task_id for r in self.lexical_only.results]
+
+        lines = [
+            f"Lexical-only resolved: {self.lexical_only.resolved_count}/{len(self.lexical_only.results)} | "
+            f"Code-aware resolved: {self.code_aware.resolved_count}/{len(self.code_aware.results)}",
+            "",
+            "| Task ID | Lexical Outcome | Code-Aware Outcome | Calls (L vs C) | Prompt Tokens (L vs C) | Retrieval ms (L vs C) | Parses (C) | Wall Time s (L vs C) |",
+            "| --- | --- | --- | --- | --- | --- | ---: | --- |",
+        ]
+        for tid in task_ids:
+            l_res = l_map[tid]
+            c_res = c_map[tid]
+            l_tok = str(l_res.prompt_tokens) if l_res.prompt_tokens is not None else "-"
+            c_tok = str(c_res.prompt_tokens) if c_res.prompt_tokens is not None else "-"
+            lines.append(
+                f"| `{tid}` | `{l_res.outcome.value}` ({l_res.oracle_tier.value}) "
+                f"| `{c_res.outcome.value}` ({c_res.oracle_tier.value}) "
+                f"| {l_res.model_calls} vs {c_res.model_calls} "
+                f"| {l_tok} vs {c_tok} "
+                f"| {l_res.retrieval_duration_ms:.1f} vs {c_res.retrieval_duration_ms:.1f} "
+                f"| {c_res.retrieval_parse_count} "
+                f"| {l_res.duration_seconds:.2f} vs {c_res.duration_seconds:.2f} |"
+            )
+        return "\n".join(lines) + "\n"
+
+
+def compare_retrieval_modes(
+    manifests: Sequence[TaskManifest],
+    *,
+    work_root: Path,
+    model: Model = chat,
+    artifacts_root: Path | None = None,
+    db_path: Path | None = None,
+    policy: ToolPolicy | None = None,
+    max_model_calls: int = DEFAULT_MAX_MODEL_CALLS,
+    max_steps: int = DEFAULT_MAX_STEPS,
+    request_timeout: float = DEFAULT_REQUEST_TIMEOUT,
+    run_timeout: float = DEFAULT_RUN_TIMEOUT,
+    oracle_timeout: float = 60.0,
+    setup_timeout: float = 120.0,
+    cleanup_workspaces: bool = True,
+    experiment_config: ExperimentConfig | None = None,
+    server_pid: int | None = None,
+    collect_memory: bool = True,
+    token_budget: TokenBudget | None = None,
+    token_counter: TokenCounter | Callable[[str], int] | None = None,
+    max_tool_output_bytes: int | None = None,
+) -> RetrievalComparisonReport:
+    """Run lexical_only vs code_aware with bounded_history held constant."""
+    common_kwargs: dict[str, object] = {
+        "model": model,
+        "db_path": db_path,
+        "policy": policy,
+        "max_model_calls": max_model_calls,
+        "max_steps": max_steps,
+        "request_timeout": request_timeout,
+        "run_timeout": run_timeout,
+        "oracle_timeout": oracle_timeout,
+        "setup_timeout": setup_timeout,
+        "cleanup_workspaces": cleanup_workspaces,
+        "experiment_config": experiment_config,
+        "server_pid": server_pid,
+        "collect_memory": collect_memory,
+        "context_strategy": "bounded_history",
+        "token_budget": token_budget,
+        "token_counter": token_counter,
+        "max_tool_output_bytes": max_tool_output_bytes,
+    }
+    lexical = evaluate_suite(
+        manifests,
+        work_root=work_root / "lexical_only",
+        artifacts_root=artifacts_root / "lexical_only" if artifacts_root else None,
+        retrieval_backend="lexical_only",
+        **common_kwargs,  # type: ignore[arg-type]
+    )
+    code_aware = evaluate_suite(
+        manifests,
+        work_root=work_root / "code_aware",
+        artifacts_root=artifacts_root / "code_aware" if artifacts_root else None,
+        retrieval_backend="code_aware",
+        **common_kwargs,  # type: ignore[arg-type]
+    )
+    report = RetrievalComparisonReport(lexical_only=lexical, code_aware=code_aware)
+    if artifacts_root is not None:
+        artifacts_root.mkdir(parents=True, exist_ok=True)
+        (artifacts_root / "retrieval_comparison.md").write_text(
             report.to_markdown(),
             encoding="utf-8",
         )

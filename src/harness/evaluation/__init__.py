@@ -17,8 +17,10 @@ from harness.evaluation.resources import (
 )
 from harness.evaluation.runner import EvaluationResult, evaluate_task
 from harness.evaluation.suite import (
+    RetrievalComparisonReport,
     StrategyComparisonReport,
     SuiteSummary,
+    compare_retrieval_modes,
     compare_strategies,
     evaluate_suite,
     load_suite_dir,
@@ -41,6 +43,7 @@ __all__ = [
     "ModelSpec",
     "OracleTier",
     "PatchApplyError",
+    "RetrievalComparisonReport",
     "StrategyComparisonReport",
     "SuiteSummary",
     "TaskManifest",
@@ -48,6 +51,7 @@ __all__ = [
     "capture_git_commit",
     "capture_host_info",
     "capture_workspace_patch",
+    "compare_retrieval_modes",
     "compare_strategies",
     "compute_file_sha256",
     "evaluate_suite",
