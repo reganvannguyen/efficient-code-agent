@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from harness.retrieval.filtering import classify_candidate
+from harness.retrieval.repo_map import RepoSymbolIndex
 
 if TYPE_CHECKING:
     from harness.tools.dispatcher import ToolResult
@@ -91,6 +92,32 @@ class CodeAwareRetrievalBackend:
 
     mode: str = "code_aware"
     approved_overrides: tuple[str, ...] = ()
+    _indexes: dict[Path, RepoSymbolIndex] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+
+    def get_index(self, root: Path) -> RepoSymbolIndex:
+        """Return or create the per-run RepoSymbolIndex for ``root``."""
+        resolved = root.resolve()
+        index = self._indexes.get(resolved)
+        if index is None:
+            index = RepoSymbolIndex(
+                resolved, approved_overrides=self.approved_overrides
+            )
+            self._indexes[resolved] = index
+        return index
+
+    def invalidate(
+        self, relative_path: str | None = None, *, root: Path | None = None
+    ) -> None:
+        """Invalidate cached symbol entries after edits, renames, or deletions."""
+        if root is not None:
+            index = self._indexes.get(root.resolve())
+            if index is not None:
+                index.invalidate(relative_path)
+            return
+        for index in self._indexes.values():
+            index.invalidate(relative_path)
 
     def list_files(self, root: Path, arguments: dict[str, object]) -> ToolResult:
         from harness.tools.dispatcher import ToolResult

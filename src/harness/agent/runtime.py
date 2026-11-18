@@ -741,6 +741,14 @@ def run_agent(
                         )
                         _stop(run, RunStatus.LIMIT_REACHED, "no_progress", emit)
                         return run
+                if action.name == "edit_file" and result.get("ok"):
+                    edited_path = action.arguments.get("path")
+                    if (
+                        isinstance(edited_path, str)
+                        and resolved_retrieval is not None
+                        and hasattr(resolved_retrieval, "invalidate")
+                    ):
+                        resolved_retrieval.invalidate(edited_path, root=root)
                 history_observation = _bound_tool_result_for_history(
                     result,
                     step=run.steps,
