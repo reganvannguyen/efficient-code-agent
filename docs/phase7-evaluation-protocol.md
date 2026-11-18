@@ -6,7 +6,7 @@
 
 - **Model:** `Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf` (`sha256: 1664fccab734674a50763490a8c6931b54806d30e5f956b6`, `Q4_K_M`).
 - **Server:** `/opt/homebrew/bin/llama-server -m ... -c 8192 --port 9931` (`tool_format: json_schema`).
-- **Budgets:** `context_window=8192`, `output_reserve=1024`, `max_tokens=1024`, `max_model_calls=30`, `max_steps=30`, `max_consecutive_invalid_actions=6`, `request_timeout=120s`, `run_timeout=300s`, `oracle_timeout=60s`, `setup_timeout=120s`.
+- **Budgets:** `context_window=8192`, `output_reserve=1024`, `max_tokens=1024`, `max_model_calls=30`, `max_steps=30`, `max_consecutive_invalid_actions=6`, `request_timeout=120s`, `run_timeout=300s`, `oracle_timeout=60s`, `setup_timeout=300s`.
 - **Workspace & approval policy:** isolated per-trial `agent/` and `evaluator/` clean git checkouts (`cleanup_workspaces=True`); `edit_file=AUTO`, `run_tests=AUTO` inside `agent/` only.
 
 ## 2. Suite partitions & 20-task evaluation plan

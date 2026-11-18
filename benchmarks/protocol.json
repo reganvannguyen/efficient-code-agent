@@ -13,6 +13,6 @@
   "request_timeout": 120.0,
   "run_timeout": 300.0,
   "oracle_timeout": 60.0,
-  "setup_timeout": 120.0,
+  "setup_timeout": 300.0,
   "cleanup_workspaces": true
 }
