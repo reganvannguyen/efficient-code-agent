@@ -35,6 +35,7 @@ from harness.evaluation.workspace import (
     restore_paths,
 )
 from harness.llama_client import chat
+from harness.retrieval import RetrievalBackend, resolve_retrieval_backend
 from harness.storage.artifacts import RunArtifacts, write_run_artifacts
 from harness.storage.recorder import RunRecorder
 from harness.tools.policy import ToolMode, ToolPolicy
@@ -67,6 +68,8 @@ class EvaluationResult:
     total_tokens: int | None = None
     context_edit_count: int = 0
     context_pruned_count: int = 0
+    retrieval_duration_ms: float = 0.0
+    retrieval_parse_count: int = 0
 
 
 def _default_agent_policy(manifest: TaskManifest) -> ToolPolicy:
@@ -194,6 +197,7 @@ def evaluate_task(
     token_budget: TokenBudget | None = None,
     token_counter: TokenCounter | Callable[[str], int] | None = None,
     max_tool_output_bytes: int | None = None,
+    retrieval_backend: RetrievalBackend | str | None = None,
 ) -> EvaluationResult:
     """Run one task in a fresh agent checkout and grade its patch in a separate checkout."""
     trial_dir = work_root / f"{manifest.task_id}_{uuid.uuid4().hex[:8]}"
@@ -244,6 +248,11 @@ def evaluate_task(
             run_manifest["experiment_config"] = experiment_config.to_dict()
 
         run_memory_dir = trial_dir / "memory" if include_context_edit else None
+        resolved_retrieval = (
+            resolve_retrieval_backend(retrieval_backend)
+            if retrieval_backend is not None
+            else None
+        )
         run = run_agent(
             manifest.agent_prompt(),
             agent_workspace,
@@ -260,6 +269,7 @@ def evaluate_task(
             token_budget=token_budget,
             token_counter=token_counter,
             max_tool_output_bytes=max_tool_output_bytes,
+            retrieval_backend=resolved_retrieval,
         )
         memory_after = (
             sample_macos_memory(server_pid=server_pid) if collect_memory else None
@@ -286,6 +296,18 @@ def evaluate_task(
         )
         context_pruned_count = sum(
             1 for e in run.events if e.event_type == RunEventType.CONTEXT_PRUNED
+        )
+        retrieval_duration_ms = sum(
+            float(e.duration_ms or 0.0)
+            for e in run.events
+            if e.event_type == RunEventType.TOOL_RESULT
+            and e.data.get("tool") in {"list_files", "search_code", "read_file"}
+        )
+        retrieval_parse_count = (
+            resolved_retrieval.get_index(agent_workspace).parse_count
+            if resolved_retrieval is not None
+            and hasattr(resolved_retrieval, "get_index")
+            else 0
         )
 
         def _build_result(
@@ -321,6 +343,8 @@ def evaluate_task(
                 total_tokens=run.total_tokens,
                 context_edit_count=context_edit_count,
                 context_pruned_count=context_pruned_count,
+                retrieval_duration_ms=retrieval_duration_ms,
+                retrieval_parse_count=retrieval_parse_count,
             )
 
         try:
