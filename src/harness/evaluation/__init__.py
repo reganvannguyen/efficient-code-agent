@@ -8,6 +8,12 @@ from harness.evaluation.config import (
     compute_file_sha256,
 )
 from harness.evaluation.manifest import ManifestError, OracleTier, TaskManifest
+from harness.evaluation.protocol import (
+    FrozenEvaluationProtocol,
+    compute_suite_digest,
+    verify_agent_prompt_isolation,
+    verify_suite_partition_isolation,
+)
 from harness.evaluation.resources import (
     MemorySnapshot,
     parse_memory_pressure,
@@ -38,6 +44,7 @@ __all__ = [
     "EvaluationResult",
     "EvaluationSetupError",
     "ExperimentConfig",
+    "FrozenEvaluationProtocol",
     "ManifestError",
     "MemorySnapshot",
     "ModelSpec",
@@ -54,6 +61,7 @@ __all__ = [
     "compare_retrieval_modes",
     "compare_strategies",
     "compute_file_sha256",
+    "compute_suite_digest",
     "evaluate_suite",
     "evaluate_task",
     "load_suite_dir",
@@ -63,4 +71,6 @@ __all__ = [
     "prepare_clean_checkout",
     "restore_paths",
     "sample_macos_memory",
+    "verify_agent_prompt_isolation",
+    "verify_suite_partition_isolation",
 ]
