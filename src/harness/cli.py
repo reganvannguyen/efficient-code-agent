@@ -119,12 +119,49 @@ def main(argv: list[str] | None = None) -> None:
         default_context_strategy="editable_context",
         default_max_tokens=1024,
     )
+    ui_parser = commands.add_parser(
+        "ui",
+        help="launch the local-only web UI for running and inspecting agent tasks",
+    )
+    ui_parser.add_argument("--host", default="127.0.0.1")
+    ui_parser.add_argument("--port", type=int, default=8765)
+    ui_parser.add_argument("--repo", type=Path, default=None)
+    ui_parser.add_argument("--base-url", default="http://127.0.0.1:9931")
+    ui_parser.add_argument("--model", default="Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf")
+    ui_parser.add_argument(
+        "--db-path",
+        type=Path,
+        default=Path.home() / ".harness" / "ui" / "traces.db",
+    )
+    ui_parser.add_argument(
+        "--memory-dir",
+        type=Path,
+        default=Path.home() / ".harness" / "ui" / "runs",
+    )
+    ui_parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(args_list)
     if args.command == "run":
         _run(args, parser)
         return
     if args.command == "session":
         _session(args, parser)
+        return
+    if args.command == "ui":
+        from harness.ui import serve_ui
+
+        try:
+            serve_ui(
+                host=args.host,
+                port=args.port,
+                default_repo=args.repo,
+                base_url=args.base_url,
+                model_name=args.model,
+                db_path=args.db_path,
+                memory_dir=args.memory_dir,
+                open_browser=not args.no_browser,
+            )
+        except ValueError as exc:
+            parser.error(str(exc))
         return
     if not args.prompt.strip():
         parser.error("chat prompt must not be blank")
