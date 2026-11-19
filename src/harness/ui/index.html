@@ -521,6 +521,45 @@
       return data;
     }
 
+    const PREFS_KEY = "eca_ui_prefs_v1";
+
+    function savePreferences() {
+      try {
+        const prefs = {
+          strategy: document.getElementById("strategySelect").value,
+          retrieval: document.getElementById("retrievalSelect").value,
+          ctx: document.getElementById("ctxInput").value,
+          unlimited: document.getElementById("unlimitedCheck").checked,
+          maxCalls: document.getElementById("maxCallsInput").value,
+          maxSteps: document.getElementById("maxStepsInput").value,
+          maxInvalid: document.getElementById("maxInvalidInput").value,
+          mode: document.getElementById("modeSelect").value,
+          inspectorCollapsed: document.getElementById("inspector").classList.contains("collapsed"),
+        };
+        localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+      } catch (_) {}
+    }
+
+    function loadPreferences() {
+      try {
+        const raw = localStorage.getItem(PREFS_KEY);
+        if (!raw) return;
+        const p = JSON.parse(raw);
+        if (p.strategy) document.getElementById("strategySelect").value = p.strategy;
+        if (p.retrieval) document.getElementById("retrievalSelect").value = p.retrieval;
+        if (p.ctx) document.getElementById("ctxInput").value = p.ctx;
+        if (typeof p.unlimited === "boolean") document.getElementById("unlimitedCheck").checked = p.unlimited;
+        if (p.maxCalls) document.getElementById("maxCallsInput").value = p.maxCalls;
+        if (p.maxSteps) document.getElementById("maxStepsInput").value = p.maxSteps;
+        if (p.maxInvalid) document.getElementById("maxInvalidInput").value = p.maxInvalid;
+        if (p.mode) document.getElementById("modeSelect").value = p.mode;
+        if (p.inspectorCollapsed) {
+          document.getElementById("inspector").classList.add("collapsed");
+          document.getElementById("inspectorToggleBtn").innerHTML = "&#9664;";
+        }
+      } catch (_) {}
+    }
+
     function updateSettingsSummary() {
       const s = document.getElementById("strategySelect").value;
       const r = document.getElementById("retrievalSelect").value;
@@ -531,7 +570,21 @@
       document.getElementById("maxStepsInput").disabled = unl;
       document.getElementById("activeSettingsSummary").textContent = `${s} · ${r} · ${c}ctx · ${mc}calls`;
     }
-    document.getElementById("unlimitedCheck").onchange = updateSettingsSummary;
+    for (const id of [
+      "strategySelect",
+      "retrievalSelect",
+      "ctxInput",
+      "unlimitedCheck",
+      "maxCallsInput",
+      "maxStepsInput",
+      "maxInvalidInput",
+      "modeSelect",
+    ]) {
+      document.getElementById(id).addEventListener("change", () => {
+        updateSettingsSummary();
+        savePreferences();
+      });
+    }
 
     async function checkHealth() {
       try {
@@ -773,6 +826,7 @@
       const panel = document.getElementById("inspector");
       const collapsed = panel.classList.toggle("collapsed");
       document.getElementById("inspectorToggleBtn").innerHTML = collapsed ? "&#9664;" : "&#9654;";
+      savePreferences();
     };
     document.getElementById("settingsBtn").onclick = () => {
       document.getElementById("settingsModal").classList.add("open");
@@ -933,6 +987,7 @@
         pct >= 90 ? "var(--red)" : pct >= 75 ? "var(--amber)" : "var(--accent)";
     }
 
+    loadPreferences();
     updateSettingsSummary();
     updateContextBar(0, Number(document.getElementById("ctxInput").value) || 8192);
     renderMemoryFolder([], "");
