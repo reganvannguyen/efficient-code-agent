@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Efficient Code Agent</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #161d24;
+      --panel-2: #1c252e;
+      --border: #28323d;
+      --text: #e6edf3;
+      --muted: #8b98a5;
+      --accent: #3b82f6;
+      --user-bg: #1e3a5f;
+      --green: #22c55e;
+      --red: #ef4444;
+      --amber: #f59e0b;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .brand { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; }
+    .hdr-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .health {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.ok { background: var(--green); }
+    .dot.err { background: var(--red); }
+    .ctx-meter {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-family: var(--mono);
+      color: var(--muted);
+    }
+    .ctx-track {
+      width: 110px;
+      height: 7px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .ctx-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.2s ease, background-color 0.2s ease;
+    }
+    .offline-hint {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--amber);
+      background: #231d12;
+      border: 1px solid #4d3b14;
+      padding: 4px 8px;
+      border-radius: 6px;
+      display: none;
+    }
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+    }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: #26313d; color: var(--text); }
+    button.danger { background: var(--red); }
+    button.success { background: var(--green); color: #08120c; }
+    .workspace {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .chat-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+    .thread {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .empty-state {
+      margin: auto;
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .msg {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 85%;
+    }
+    .msg.user { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; width: 100%; max-width: 92%; }
+    .bubble {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user .bubble { background: var(--user-bg); border: 1px solid #2c5282; }
+    .msg.assistant .bubble { background: var(--panel); border: 1px solid var(--border); }
+    .msg-meta {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    details.tools {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    details.tools summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 600;
+      user-select: none;
+    }
+    .tool-list {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .tool-pill {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 5px 8px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .approval-card {
+      background: #241e11;
+      border: 1px solid #6b5119;
+      border-radius: 10px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 0 auto 8px;
+      max-width: 900px;
+      width: calc(100% - 40px);
+    }
+    .composer-wrap {
+      padding: 10px 16px 28px;
+      background: var(--bg);
+    }
+    .composer {
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .composer-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .composer-box textarea {
+      width: 100%;
+      background: transparent;
+      color: var(--text);
+      border: 0;
+      outline: none;
+      padding: 2px 4px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      min-height: 44px;
+      max-height: 150px;
+    }
+    .composer-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      border-top: 1px solid var(--border);
+      padding-top: 8px;
+    }
+    .composer-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .composer-left select, .composer-left input[type="text"] {
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 8px;
+      font-size: 12px;
+    }
+    .composer-left input[type="text"] { width: 200px; }
+    .inspector {
+      width: 420px;
+      border-left: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      transition: width 0.15s ease;
+    }
+    .inspector.collapsed { width: 42px; }
+    .inspector.collapsed .tab-btn,
+    .inspector.collapsed .tab-pane { display: none !important; }
+    .inspector.collapsed .tabs { border-bottom: 0; justify-content: center; padding: 10px 4px; }
+    .arrow-btn {
+      background: transparent;
+      color: var(--muted);
+      padding: 4px 8px;
+      font-size: 13px;
+      border-radius: 6px;
+    }
+    .arrow-btn:hover { background: #26313d; color: var(--text); }
+    .tabs { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .tab-btn { background: transparent; color: var(--muted); padding: 5px 10px; font-size: 12px; }
+    .tab-btn.active { background: #26313d; color: var(--text); }
+    .tab-pane { display: none; flex: 1; min-height: 0; padding: 10px 12px; flex-direction: column; gap: 8px; overflow-y: auto; }
+    .tab-pane.active { display: flex; }
+    pre {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      flex: 1;
+      overflow-y: auto;
+    }
+    .hist-item {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .hist-item:hover { border-color: var(--accent); }
+    .mem-tree {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-family: var(--mono);
+      font-size: 12px;
+      max-height: 170px;
+      overflow-y: auto;
+    }
+    .mem-folder { color: var(--muted); padding: 3px 6px; font-size: 11px; }
+    .mem-item {
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .mem-item.indent { padding-left: 20px; }
+    .mem-item:hover { background: #1e2631; }
+    .mem-item.active { background: #26313d; color: var(--accent); font-weight: 600; }
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      width: 440px;
+      max-width: 92vw;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .modal h2 { margin: 0; font-size: 16px; }
+    .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .field input, .field select {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 9px;
+      font-size: 13px;
+    }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    @media (max-width: 960px) {
+      .inspector { width: 320px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>Efficient Code Agent</span>
+      <button id="newChatBtn" class="secondary">New Chat</button>
+    </div>
+    <div class="ctx-meter" title="Latest model call prompt tokens vs context window">
+      <span id="ctxLabel">Context: 0 / 8,192 (0%)</span>
+      <div class="ctx-track"><div id="ctxFill" class="ctx-fill"></div></div>
+    </div>
+    <div class="hdr-right">
+      <span class="offline-hint" id="offlineHint"></span>
+      <div class="health">
+        <span class="dot" id="healthDot"></span>
+        <span id="healthText">Checking llama-server...</span>
+      </div>
+      <button id="settingsBtn" class="secondary">&#9881; Settings</button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <section class="chat-pane">
+      <div id="thread" class="thread">
+        <div class="empty-state" id="emptyState">
+          Send a message to inspect or fix code in your repository.
+        </div>
+      </div>
+
+      <div id="approvalBox" class="approval-card" style="display:none;">
+        <div style="font-weight:600;font-size:13px;color:var(--amber);">Approval Required</div>
+        <div id="approvalText" style="font-family:var(--mono);font-size:12px;"></div>
+        <div style="display:flex;gap:8px;">
+          <button id="approveBtn" class="success">Approve</button>
+          <button id="denyBtn" class="danger">Deny</button>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <div class="composer-box">
+            <textarea id="taskInput" placeholder="Ask a question or describe a fix... (Enter to send, Shift+Enter for newline)"></textarea>
+            <div class="composer-bar">
+              <div class="composer-left">
+                <select id="modeSelect" title="Execution & approval mode">
+                  <option value="read_only" id="readOnlyOpt">Chat only</option>
+                  <option value="coding_ask" selected>Coding (Ask)</option>
+                  <option value="coding_auto">Coding (Auto)</option>
+                </select>
+                <span>Repo: <input id="repoInput" type="text" placeholder="No repo (chat only)"> <button id="browseRepoBtn" class="secondary" type="button" style="padding:4px 8px;font-size:12px;">Browse...</button> <button id="clearRepoBtn" class="secondary" type="button" title="Detach repo (chat only)" style="padding:4px 7px;font-size:12px;">&#215;</button></span>
+                <span id="activeSettingsSummary" style="font-family:var(--mono);font-size:11px;"></span>
+              </div>
+              <div>
+                <button id="sendBtn">Send</button>
+                <button id="stopBtn" class="danger" style="display:none;">Stop</button>
+              </div>
+            </div>
+          </div>
+          <div id="runError" style="color:var(--red);font-size:12px;"></div>
+        </div>
+      </div>
+    </section>
+
+    <aside id="inspector" class="inspector">
+      <div class="tabs">
+        <button id="inspectorToggleBtn" class="arrow-btn" title="Collapse / expand panel">&#9654;</button>
+        <button class="tab-btn active" data-tab="notesPane">Working Notes</button>
+        <button class="tab-btn" data-tab="findingsPane">Findings</button>
+        <button class="tab-btn" data-tab="diffPane">Diff</button>
+        <button class="tab-btn" data-tab="historyPane">Sessions</button>
+      </div>
+      <div id="notesPane" class="tab-pane active">
+        <pre id="notesBox">(no working.md notes yet)</pre>
+      </div>
+      <div id="findingsPane" class="tab-pane">
+        <div id="findingsTree" class="mem-tree"></div>
+        <pre id="findingBox">(no findings yet)</pre>
+      </div>
+      <div id="diffPane" class="tab-pane">
+        <pre id="diffBox">(no candidate diff)</pre>
+      </div>
+      <div id="historyPane" class="tab-pane">
+        <button id="refreshHistoryBtn" class="secondary" style="align-self:flex-start;">Refresh Sessions</button>
+        <div id="historyList" style="display:flex;flex-direction:column;gap:6px;overflow-y:auto;"></div>
+      </div>
+    </aside>
+  </div>
+
+  <div id="settingsModal" class="modal-backdrop">
+    <div class="modal">
+      <h2>Agent Settings</h2>
+      <div class="grid2">
+        <div class="field">
+          <label for="strategySelect">Context Strategy</label>
+          <select id="strategySelect">
+            <option value="bounded_history">bounded_history (baseline)</option>
+            <option value="editable_context" selected>editable_context (notes)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="retrievalSelect">Retrieval Mode</label>
+          <select id="retrievalSelect">
+            <option value="lexical_only">lexical_only (ripgrep)</option>
+            <option value="code_aware" selected>code_aware (Tree-sitter)</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label for="ctxInput">Context Window (tokens)</label>
+        <input id="ctxInput" type="number" value="8192" min="512">
+      </div>
+      <div class="field">
+        <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);">
+          <input id="unlimitedCheck" type="checkbox" style="width:auto;"> Unlimited calls &amp; steps (bounded only by Stop / no-progress)
+        </label>
+      </div>
+      <div class="grid3">
+        <div class="field">
+          <label for="maxCallsInput">Max Calls</label>
+          <input id="maxCallsInput" type="number" value="30" min="1">
+        </div>
+        <div class="field">
+          <label for="maxStepsInput">Max Steps</label>
+          <input id="maxStepsInput" type="number" value="30" min="1">
+        </div>
+        <div class="field">
+          <label for="maxInvalidInput">Max Invalid</label>
+          <input id="maxInvalidInput" type="number" value="6" min="1">
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button id="closeSettingsBtn" class="secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let sessionId = crypto.randomUUID ? crypto.randomUUID().slice(0, 12) : String(Date.now());
+    let currentRunId = null;
+    let pollTimer = null;
+    const turns = new Map();
+
+    async function api(path, options = {}) {
+      const resp = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    function updateSettingsSummary() {
+      const s = document.getElementById("strategySelect").value;
+      const r = document.getElementById("retrievalSelect").value;
+      const c = document.getElementById("ctxInput").value;
+      const unl = document.getElementById("unlimitedCheck").checked;
+      const mc = unl ? "∞" : document.getElementById("maxCallsInput").value;
+      document.getElementById("maxCallsInput").disabled = unl;
+      document.getElementById("maxStepsInput").disabled = unl;
+      document.getElementById("activeSettingsSummary").textContent = `${s} · ${r} · ${c}ctx · ${mc}calls`;
+    }
+    document.getElementById("unlimitedCheck").onchange = updateSettingsSummary;
+
+    async function checkHealth() {
+      try {
+        const h = await api("/api/health");
+        const dot = document.getElementById("healthDot");
+        const txt = document.getElementById("healthText");
+        const hint = document.getElementById("offlineHint");
+        if (h.llama_server_ok) {
+          dot.className = "dot ok";
+          txt.textContent = `llama-server online`;
+          hint.style.display = "none";
+        } else {
+          dot.className = "dot err";
+          txt.textContent = `llama-server offline`;
+          hint.textContent = `Start: ${h.start_command}`;
+          hint.style.display = "inline-block";
+        }
+        if (!window._repoInitialized) {
+          window._repoInitialized = true;
+          if (h.default_repo) {
+            document.getElementById("repoInput").value = h.default_repo;
+          }
+          syncModeForRepo();
+        }
+      } catch (_) {}
+    }
+
+    function createTurnNodes(runId, userText) {
+      const empty = document.getElementById("emptyState");
+      if (empty) empty.style.display = "none";
+      const thread = document.getElementById("thread");
+
+      const userDiv = document.createElement("div");
+      userDiv.className = "msg user";
+      const userBubble = document.createElement("div");
+      userBubble.className = "bubble";
+      userBubble.textContent = userText;
+      userDiv.appendChild(userBubble);
+      thread.appendChild(userDiv);
+
+      const asstDiv = document.createElement("div");
+      asstDiv.className = "msg assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = "Thinking...";
+      const details = document.createElement("details");
+      details.className = "tools";
+      const summary = document.createElement("summary");
+      summary.textContent = "Tool calls & steps (0)";
+      const toolList = document.createElement("div");
+      toolList.className = "tool-list";
+      details.appendChild(summary);
+      details.appendChild(toolList);
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+
+      asstDiv.appendChild(bubble);
+      asstDiv.appendChild(details);
+      asstDiv.appendChild(meta);
+      thread.appendChild(asstDiv);
+      thread.scrollTop = thread.scrollHeight;
+
+      turns.set(runId, { bubble, summary, toolList, meta, renderedEvents: 0 });
+    }
+
+    function renderRun(run, runId = currentRunId) {
+      const thread = document.getElementById("thread");
+      const wasAtBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48;
+
+      const nodes = runId ? turns.get(runId) : null;
+      if (nodes) {
+        if (run.final_response) {
+          nodes.bubble.textContent = run.final_response;
+        } else if (run.status === "running" || run.status === "waiting_approval") {
+          nodes.bubble.textContent = run.status === "waiting_approval" ? "Waiting for approval..." : `Working (step ${run.steps})...`;
+        } else {
+          nodes.bubble.textContent = `Stopped (${run.stop_reason || run.status})`;
+        }
+
+        const interesting = (run.events || []).filter((e) =>
+          ["tool_requested", "tool_result", "context_edit", "context_pruned", "verification_result"].includes(e.event_type)
+        );
+        nodes.summary.textContent = `Tool calls & steps (${interesting.length})`;
+        if (interesting.length < nodes.renderedEvents) {
+          nodes.toolList.innerHTML = "";
+          nodes.renderedEvents = 0;
+        }
+        for (let i = nodes.renderedEvents; i < interesting.length; i++) {
+          const ev = interesting[i];
+          const pill = document.createElement("div");
+          pill.className = "tool-pill";
+          pill.textContent = `#${ev.sequence} ${ev.event_type}: ${JSON.stringify(ev.data)}`;
+          nodes.toolList.appendChild(pill);
+        }
+        nodes.renderedEvents = interesting.length;
+        nodes.meta.textContent = `${run.status}${run.stop_reason ? " (" + run.stop_reason + ")" : ""} · ${run.steps} steps · ${run.model_calls} calls · ${run.total_tokens ?? "-"} tokens`;
+      }
+
+      const box = document.getElementById("approvalBox");
+      if (run.pending_approval) {
+        box.style.display = "flex";
+        document.getElementById("approvalText").textContent =
+          `${run.pending_approval.tool} -> ${run.pending_approval.target || run.pending_approval.path}`;
+      } else {
+        box.style.display = "none";
+      }
+
+      document.getElementById("diffBox").textContent = run.candidate_diff || "(no candidate diff)";
+      renderMemoryFolder(run.memory_files, run.working_md);
+      updateContextBar(run.context_tokens ?? 0, run.context_window || Number(document.getElementById("ctxInput").value) || 8192);
+
+      const active = run.status === "running" || run.status === "pending" || run.status === "waiting_approval";
+      document.getElementById("sendBtn").style.display = active ? "none" : "inline-block";
+      document.getElementById("stopBtn").style.display = active ? "inline-block" : "none";
+      if (!active && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        loadHistory();
+      }
+      if (wasAtBottom) {
+        thread.scrollTop = thread.scrollHeight;
+      }
+    }
+
+    async function pollRun() {
+      if (!currentRunId) return;
+      try {
+        const run = await api(`/api/runs/${currentRunId}`);
+        renderRun(run, currentRunId);
+      } catch (_) {}
+    }
+
+    async function sendTask() {
+      document.getElementById("runError").textContent = "";
+      const task = document.getElementById("taskInput").value;
+      if (!task.trim()) return;
+      try {
+        const modeVal = document.getElementById("modeSelect").value;
+        const payload = {
+          repo: document.getElementById("repoInput").value.trim(),
+          task,
+          session_id: sessionId,
+          context_strategy: document.getElementById("strategySelect").value,
+          retrieval_mode: document.getElementById("retrievalSelect").value,
+          context_window: Number(document.getElementById("ctxInput").value) || 8192,
+          unlimited_steps: document.getElementById("unlimitedCheck").checked,
+          max_model_calls: Number(document.getElementById("maxCallsInput").value) || 30,
+          max_steps: Number(document.getElementById("maxStepsInput").value) || 30,
+          max_consecutive_invalid_actions: Number(document.getElementById("maxInvalidInput").value) || 6,
+          coding: modeVal !== "read_only",
+          auto_approve: modeVal === "coding_auto",
+        };
+        document.getElementById("sendBtn").style.display = "none";
+        document.getElementById("stopBtn").style.display = "inline-block";
+        const created = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
+        document.getElementById("taskInput").value = "";
+        currentRunId = created.run_id;
+        createTurnNodes(currentRunId, task.trim());
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(pollRun, 400);
+        await pollRun();
+      } catch (err) {
+        document.getElementById("sendBtn").style.display = "inline-block";
+        document.getElementById("stopBtn").style.display = "none";
+        document.getElementById("runError").textContent = err.message;
+      }
+    }
+
+    function syncModeForRepo() {
+      const hasRepo = Boolean(document.getElementById("repoInput").value.trim());
+      const sel = document.getElementById("modeSelect");
+      const ro = document.getElementById("readOnlyOpt");
+      ro.textContent = hasRepo ? "Read-only" : "Chat only";
+      for (const opt of sel.options) {
+        if (opt.value !== "read_only") opt.disabled = !hasRepo;
+      }
+      if (!hasRepo) sel.value = "read_only";
+    }
+
+    document.getElementById("repoInput").addEventListener("input", syncModeForRepo);
+
+    document.getElementById("clearRepoBtn").onclick = () => {
+      document.getElementById("repoInput").value = "";
+      syncModeForRepo();
+    };
+
+    document.getElementById("browseRepoBtn").onclick = async () => {
+      document.getElementById("runError").textContent = "";
+      try {
+        const res = await api("/api/pick-repo", { method: "POST", body: "{}" });
+        if (!res.cancelled && res.path) {
+          document.getElementById("repoInput").value = res.path;
+          syncModeForRepo();
+        }
+      } catch (err) {
+        document.getElementById("runError").textContent = err.message;
+      }
+    };
+
+    document.getElementById("sendBtn").onclick = sendTask;
+    document.getElementById("taskInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendTask();
+      }
+    });
+
+    document.getElementById("newChatBtn").onclick = () => {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      sessionId = crypto.randomUUID ? crypto.randomUUID().slice(0, 12) : String(Date.now());
+      currentRunId = null;
+      turns.clear();
+      document.getElementById("thread").innerHTML = '<div class="empty-state" id="emptyState">New chat started. Send a message to begin.</div>';
+      document.getElementById("diffBox").textContent = "(no candidate diff)";
+      selectedFindingFile = null;
+      renderMemoryFolder([], "");
+      updateContextBar(0, Number(document.getElementById("ctxInput").value) || 8192);
+    };
+
+    document.getElementById("stopBtn").onclick = async () => {
+      if (!currentRunId) return;
+      await api(`/api/runs/${currentRunId}/cancel`, { method: "POST", body: "{}" });
+      await pollRun();
+    };
+
+    document.getElementById("approveBtn").onclick = async () => {
+      if (!currentRunId) return;
+      await api(`/api/runs/${currentRunId}/approve`, { method: "POST", body: JSON.stringify({ approved: true }) });
+      await pollRun();
+    };
+
+    document.getElementById("denyBtn").onclick = async () => {
+      if (!currentRunId) return;
+      await api(`/api/runs/${currentRunId}/approve`, { method: "POST", body: JSON.stringify({ approved: false }) });
+      await pollRun();
+    };
+
+    document.getElementById("inspectorToggleBtn").onclick = () => {
+      const panel = document.getElementById("inspector");
+      const collapsed = panel.classList.toggle("collapsed");
+      document.getElementById("inspectorToggleBtn").innerHTML = collapsed ? "&#9664;" : "&#9654;";
+    };
+    document.getElementById("settingsBtn").onclick = () => {
+      document.getElementById("settingsModal").classList.add("open");
+    };
+    document.getElementById("closeSettingsBtn").onclick = () => {
+      document.getElementById("settingsModal").classList.remove("open");
+      updateSettingsSummary();
+      updateContextBar(lastContextUsed, Number(document.getElementById("ctxInput").value) || 8192);
+    };
+
+    function renderSavedTurn(turn) {
+      const thread = document.getElementById("thread");
+      const userDiv = document.createElement("div");
+      userDiv.className = "msg user";
+      const userBubble = document.createElement("div");
+      userBubble.className = "bubble";
+      userBubble.textContent = turn.user_prompt;
+      userDiv.appendChild(userBubble);
+      thread.appendChild(userDiv);
+
+      const asstDiv = document.createElement("div");
+      asstDiv.className = "msg assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      bubble.textContent = turn.assistant_reply;
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+      meta.textContent = `${turn.status}${turn.stop_reason ? " (" + turn.stop_reason + ")" : ""} · ${turn.steps} steps · ${turn.model_calls} calls · ${turn.total_tokens ?? "-"} tokens`;
+      asstDiv.appendChild(bubble);
+      asstDiv.appendChild(meta);
+      thread.appendChild(asstDiv);
+    }
+
+    let selectedFindingFile = null;
+
+    function renderMemoryFolder(files, fallbackWorkingMd = "") {
+      const notesBox = document.getElementById("notesBox");
+      const tree = document.getElementById("findingsTree");
+      const findingBox = document.getElementById("findingBox");
+      const map = new Map();
+      for (const f of files || []) {
+        map.set(f.path, f.content);
+      }
+      const workingMd = map.get("working.md") ?? fallbackWorkingMd ?? "";
+      notesBox.textContent = workingMd || "(no working.md notes yet)";
+
+      const findings = [...map.keys()]
+        .filter((p) => p.startsWith("findings/") || p === "task.md")
+        .sort();
+      if (!findings.includes(selectedFindingFile)) {
+        selectedFindingFile = findings[0] || null;
+      }
+
+      tree.innerHTML = "";
+      const folderEl = document.createElement("div");
+      folderEl.className = "mem-folder";
+      folderEl.textContent = findings.length ? "findings/" : "findings/ (empty)";
+      tree.appendChild(folderEl);
+
+      for (const fp of findings) {
+        const el = document.createElement("div");
+        el.className = `mem-item indent${selectedFindingFile === fp ? " active" : ""}`;
+        el.textContent = fp.startsWith("findings/") ? fp.slice("findings/".length) : fp;
+        el.onclick = () => {
+          selectedFindingFile = fp;
+          renderMemoryFolder(files, fallbackWorkingMd);
+        };
+        tree.appendChild(el);
+      }
+
+      if (!selectedFindingFile) {
+        findingBox.textContent = "(no findings yet)";
+      } else {
+        findingBox.textContent = map.get(selectedFindingFile) || `(empty ${selectedFindingFile})`;
+      }
+    }
+
+    async function resumeSession(targetSessionId) {
+      const detail = await api(`/api/sessions/${encodeURIComponent(targetSessionId)}`);
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      sessionId = detail.session_id;
+      currentRunId = null;
+      turns.clear();
+      const thread = document.getElementById("thread");
+      thread.innerHTML = "";
+      for (const t of detail.turns || []) {
+        renderSavedTurn(t);
+      }
+      thread.scrollTop = thread.scrollHeight;
+      document.getElementById("repoInput").value = detail.repo || "";
+      syncModeForRepo();
+      document.getElementById("diffBox").textContent = "(no candidate diff)";
+      selectedFindingFile = null;
+      renderMemoryFolder(detail.memory_files, detail.working_md);
+    }
+
+    async function loadHistory() {
+      try {
+        const data = await api("/api/sessions");
+        const list = document.getElementById("historyList");
+        list.innerHTML = "";
+        for (const item of data.sessions || []) {
+          const el = document.createElement("div");
+          el.className = "hist-item";
+          el.style.display = "flex";
+          el.style.alignItems = "center";
+          el.style.justifyContent = "space-between";
+          el.style.gap = "8px";
+          const label = document.createElement("span");
+          const repoLabel = item.repo ? item.repo.split("/").pop() : "Chat only";
+          label.textContent = `${item.title} · ${repoLabel} (${item.turn_count} turns)`;
+          const delBtn = document.createElement("button");
+          delBtn.className = "secondary";
+          delBtn.textContent = "×";
+          delBtn.title = "Delete session";
+          delBtn.style.padding = "2px 7px";
+          delBtn.style.fontSize = "12px";
+          delBtn.onclick = async (e) => {
+            e.stopPropagation();
+            await api(`/api/sessions/${encodeURIComponent(item.session_id)}/delete`, {
+              method: "POST",
+              body: "{}",
+            });
+            if (sessionId === item.session_id) {
+              document.getElementById("newChatBtn").click();
+            }
+            loadHistory();
+          };
+          el.appendChild(label);
+          el.appendChild(delBtn);
+          el.onclick = () => resumeSession(item.session_id);
+          list.appendChild(el);
+        }
+      } catch (_) {}
+    }
+
+    document.getElementById("refreshHistoryBtn").onclick = loadHistory;
+    for (const btn of document.querySelectorAll(".tab-btn")) {
+      btn.onclick = () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById(btn.dataset.tab).classList.add("active");
+      };
+    }
+
+    let lastContextUsed = 0;
+
+    function updateContextBar(used, limit) {
+      lastContextUsed = used || 0;
+      const safeLimit = Math.max(1, limit || 8192);
+      const pct = Math.min(100, Math.round((lastContextUsed / safeLimit) * 100));
+      document.getElementById("ctxLabel").textContent =
+        `Context: ${lastContextUsed.toLocaleString()} / ${safeLimit.toLocaleString()} (${pct}%)`;
+      const fill = document.getElementById("ctxFill");
+      fill.style.width = `${pct}%`;
+      fill.style.backgroundColor =
+        pct >= 90 ? "var(--red)" : pct >= 75 ? "var(--amber)" : "var(--accent)";
+    }
+
+    updateSettingsSummary();
+    updateContextBar(0, Number(document.getElementById("ctxInput").value) || 8192);
+    renderMemoryFolder([], "");
+    checkHealth();
+    setInterval(checkHealth, 5000);
+    loadHistory();
+  </script>
+</body>
+</html>
