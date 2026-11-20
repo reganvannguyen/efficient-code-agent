@@ -93,6 +93,50 @@ def default_mini_swe_agent_spec(
     )
 
 
+def default_aider_spec(
+    *,
+    protocol: FrozenEvaluationProtocol | None = None,
+    base_url: str = "http://127.0.0.1:9931/v1",
+    pinned_version: str = "0.86.2",
+) -> ExternalHarnessSpec:
+    """Build a documented ExternalHarnessSpec for Aider on local llama.cpp."""
+    model_name = (
+        protocol.gguf_filename if protocol else "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf"
+    )
+    ctx = protocol.context_window if protocol else 8192
+    return ExternalHarnessSpec(
+        harness_name="aider",
+        pinned_version=pinned_version,
+        invocation_summary=f"uvx --python 3.12 --from aider-chat=={pinned_version} aider --map-tokens 0",
+        model_name=model_name,
+        base_url=base_url,
+        context_window=ctx,
+        tool_differences=(
+            "Aider uses whole/search-replace edit blocks, direct file arguments, and --auto-test "
+            "(--map-tokens 0 on macOS to avoid scipy==1.15.3 _spropack dlopen errors); "
+            "this harness uses bounded JSON-schema tools and working.md context editing."
+        ),
+        permission_differences=(
+            "Aider runs non-interactively with --yes-always --no-auto-commits and an explicit --test-cmd; "
+            "this harness enforces ToolPolicy and fixed pytest targets."
+        ),
+        prompt_differences=(
+            "Aider uses its own edit-format system prompt and chat history; "
+            "only the task issue_text, solution file, test command, and base_commit are shared."
+        ),
+        budget_differences=(
+            "Aider uses wall-clock timeout and --max-chat-history-tokens; "
+            "this harness enforces max_model_calls, max_steps, and token_budget."
+        ),
+        unmatched_parameters=(
+            "python_runtime>=3.10_via_uvx",
+            "system_prompt_and_edit_format",
+            "aider_repo_map_and_auto_test_loop",
+            "internal_context_pruning_rules",
+        ),
+    )
+
+
 ExternalRunnerFn = Callable[[TaskManifest, Path, float], tuple[int, str]]
 
 
@@ -105,12 +149,16 @@ def _default_subprocess_runner(
     def _run(
         manifest: TaskManifest, workspace: Path, timeout: float
     ) -> tuple[int, str]:
+        solution_file = str(manifest.metadata.get("solution_file", ""))
+        test_file = manifest.oracle_tests[0] if manifest.oracle_tests else ""
         argv = [
             part.format(
                 task=manifest.agent_prompt(),
                 workspace=str(workspace),
                 model=model_name,
                 base_url=base_url,
+                solution_file=solution_file,
+                test_file=test_file,
             )
             for part in command_template
         ]
@@ -118,10 +166,13 @@ def _default_subprocess_runner(
         env["OPENAI_API_BASE"] = base_url
         env["OPENAI_BASE_URL"] = base_url
         env.setdefault("OPENAI_API_KEY", "local-llama")
+        env.setdefault("MSWEA_CONFIGURED", "true")
+        env.setdefault("MSWEA_COST_TRACKING", "ignore_errors")
         proc = subprocess.run(
             argv,
             cwd=workspace,
             env=env,
+            stdin=subprocess.DEVNULL,
             capture_output=True,
             text=True,
             timeout=timeout,
