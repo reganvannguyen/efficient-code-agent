@@ -115,7 +115,7 @@ def evaluate_verification(
     if run.last_edit_step is None:
         return VerificationQuality.UNVERIFIED, None
 
-    if run.last_test_step is None or run.last_test_step <= run.last_edit_step:
+    if run.last_test_step is None or run.last_test_step < run.last_edit_step:
         changed_str = ", ".join(run.changed_paths)
         return (
             VerificationQuality.UNVERIFIED,

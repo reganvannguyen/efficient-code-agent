@@ -1,0 +1,20 @@
+{
+  "task_id": "mem__cache_eviction_ttl",
+  "repo": "/Users/regannguyen/projects/efficient-code-agent/.runs/memory_lookup_repos/cache_eviction_ttl",
+  "base_commit": "6d3a8e5d5962e82ea3ef92c0daf1fdc75308cc96",
+  "issue_text": "The in-memory cache is evicting pinned configuration keys prematurely and expiring namespace-prefixed keys at the wrong time.\n\nInvestigate the cache package and fix the cache store so that:\n1. When no explicit TTL is passed, namespace TTL overrides are applied.\n2. Expiration checks respect the configured clock skew tolerance, and expired entries are purged before evicting live items.\n3. Capacity eviction evicts the oldest unpinned key before evicting any pinned namespace key.\n\nEnsure all tests pass.",
+  "oracle_tests": [
+    "tests/test_cache.py"
+  ],
+  "oracle_tier": "local_full",
+  "agent_test_targets": [
+    "tests/test_cache.py"
+  ],
+  "metadata": {
+    "source": "local/memory_lookup",
+    "slug": "cache_eviction_ttl",
+    "difficulty": "medium",
+    "test_file": "tests/test_cache.py",
+    "file_count": 16
+  }
+}

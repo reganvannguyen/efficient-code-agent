@@ -180,7 +180,16 @@ def execute_tool(
             if action.arguments["preset"] != "pytest" or target not in targets:
                 raise ToolFailure("permission_denied", "test target is not permitted")
             executable = sys.executable
-            argv = (executable, "-m", "pytest", "-q", "--", target)
+            argv = (
+                executable,
+                "-m",
+                "pytest",
+                "-q",
+                "--tb=short",
+                "--maxfail=5",
+                "--",
+                target,
+            )
             if policy.run_tests is ToolMode.ASK and not _approve(
                 approve,
                 ApprovalRequest(
@@ -307,10 +316,17 @@ def _validate_schema(tool: str, arguments: dict[str, object]) -> None:
         if tool == "read_file"
         else {"preset", "target"}
         if tool == "run_tests"
-        else {"path", "expected_sha256", "old_text", "new_text"}
+        else {
+            "path",
+            "expected_sha256",
+            "old_text",
+            "start_line",
+            "end_line",
+            "new_text",
+        }
     )
     required = (
-        {"path", "expected_sha256", "old_text", "new_text"}
+        {"path", "expected_sha256", "new_text"}
         if tool == "edit_file"
         else {"preset", "target"}
         if tool == "run_tests"

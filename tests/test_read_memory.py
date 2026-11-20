@@ -153,3 +153,52 @@ def test_read_memory_schema_gating() -> None:
     }
     assert "read_memory" not in default_names
     assert "read_memory" in editable_names
+
+
+def test_read_memory_omitted_from_schema_until_findings_exist(tmp_path: Path) -> None:
+    from functools import partial
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    memory_dir = tmp_path / ".harness" / "runs"
+
+    seen_tools: list[set[str]] = []
+    actions = iter(
+        [
+            {
+                "kind": "tool",
+                "name": "update_context",
+                "arguments": {
+                    "operation": "replace",
+                    "target": "findings/note.md",
+                    "content": "Confirmed bug at line 10.",
+                },
+            },
+            {"kind": "complete", "summary": "Done."},
+        ]
+    )
+
+    def model(
+        prompt: str, *, timeout: float, response_schema: object = None
+    ) -> ChatResponse:
+        assert isinstance(response_schema, dict)
+        names = {
+            v["properties"]["name"]["const"]
+            for v in response_schema.get("oneOf", [])
+            if "name" in v.get("properties", {})
+        }
+        seen_tools.append(names)
+        return _resp(next(actions))
+
+    wrapped = partial(model, response_schema=action_schema(include_context_edit=True))
+    run = run_agent(
+        "Check findings gating",
+        repo,
+        model=wrapped,
+        context_strategy="editable_context",
+        memory_dir=memory_dir,
+    )
+    assert run.status == RunStatus.COMPLETED
+    assert len(seen_tools) == 2
+    assert "read_memory" not in seen_tools[0]
+    assert "read_memory" in seen_tools[1]

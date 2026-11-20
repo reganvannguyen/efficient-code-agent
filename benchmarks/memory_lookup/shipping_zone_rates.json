@@ -1,0 +1,20 @@
+{
+  "task_id": "mem__shipping_zone_rates",
+  "repo": "/Users/regannguyen/projects/efficient-code-agent/.runs/memory_lookup_repos/shipping_zone_rates",
+  "base_commit": "02a0697458bb4c1da95e0ae6561b69f450c591ef",
+  "issue_text": "Shipping quotes are wrong for orders that qualify for free shipping, international destinations, or fragile/heavy parcels.\n\nInvestigate the shipping package and fix shipping quote calculation so that:\n1. Orders meeting the free-shipping promotion rules have base weight shipping waived (only in eligible zones).\n2. Fragile and heavy-weight handling surcharges are always applied and never waived by free shipping.\n3. Final cost is quantized to 2 decimal places.\n\nEnsure all tests pass.",
+  "oracle_tests": [
+    "tests/test_shipping.py"
+  ],
+  "oracle_tier": "local_full",
+  "agent_test_targets": [
+    "tests/test_shipping.py"
+  ],
+  "metadata": {
+    "source": "local/memory_lookup",
+    "slug": "shipping_zone_rates",
+    "difficulty": "medium",
+    "test_file": "tests/test_shipping.py",
+    "file_count": 16
+  }
+}

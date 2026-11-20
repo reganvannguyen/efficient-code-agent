@@ -463,7 +463,12 @@ class UISessionManager:
         )
         if coding and not chat_only:
             mode = ToolMode.AUTO if auto_approve else ToolMode.ASK
-            policy = ToolPolicy(edit_file=mode, run_tests=mode, test_targets=(".",))
+            policy = ToolPolicy(
+                edit_file=mode,
+                run_tests=mode,
+                test_targets=(".",),
+                auto_test_after_edit=auto_approve,
+            )
             system_prompt = CODING_SYSTEM_PROMPT
             if not auto_approve:
 
