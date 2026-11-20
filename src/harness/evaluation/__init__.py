@@ -24,6 +24,7 @@ from harness.evaluation.external import (
     ExternalComparisonReport,
     ExternalHarnessSpec,
     compare_with_external_harness,
+    default_aider_spec,
     default_mini_swe_agent_spec,
     evaluate_external_task,
 )
@@ -98,6 +99,7 @@ __all__ = [
     "compare_with_external_harness",
     "compute_file_sha256",
     "compute_suite_digest",
+    "default_aider_spec",
     "default_mini_swe_agent_spec",
     "evaluate_external_task",
     "evaluate_suite",

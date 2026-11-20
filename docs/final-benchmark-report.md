@@ -30,6 +30,7 @@ From [`docs/phase7-preliminary-trials.md`](phase7-preliminary-trials.md) (`suite
 - **Shared fixture (`local__add-tax-01`, `local_targeted`):**
   - Internal (`combined`): **1/1 resolved** in `27.61s`.
   - External (`mini-swe-agent==2.4.6` via `uvx --python 3.11`): **0/1 (`timeout` after `120.01s`)**.
+- **Third-party 3-way Exercism Python comparison (10 tasks × 3 trials = 90 runs):** See [`docs/exercism-3way-comparison.md`](exercism-3way-comparison.md) — `aider==0.86.2` (`12/30`, `40.0%`, `53.0s` avg), `internal` (`7/30`, `23.3%`, `190.0s` avg), and `mini-swe-agent==2.4.6` (`7/30`, `23.3%`, `153.1s` avg, `14` timeouts).
 
 ## 4. Exclusions, Setup Failures, and Negative Results
 

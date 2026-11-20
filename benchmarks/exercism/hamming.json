@@ -1,0 +1,21 @@
+{
+  "task_id": "exercism__hamming",
+  "repo": "/Users/regannguyen/projects/efficient-code-agent/.runs/exercism_repos/hamming",
+  "base_commit": "2b0606df0be5944dbc45b4691e78b27b6801a3a9",
+  "issue_text": "Implement the Python exercise 'hamming' in `hamming.py` so that all tests in `hamming_test.py` pass.\n\n# Introduction\n\nYour body is made up of cells that contain DNA.\nThose cells regularly wear out and need replacing, which they achieve by dividing into daughter cells.\nIn fact, the average human body experiences about 10 quadrillion cell divisions in a lifetime!\n\nWhen cells divide, their DNA replicates too.\nSometimes during this process mistakes happen and single pieces of DNA get encoded with the incorrect information.\nIf we compare two strands of DNA and count the differences between them, we can see how many mistakes occurred.\nThis is known as the \"Hamming distance\".\n\nThe Hamming distance is useful in many areas of science, not just biology, so it's a nice phrase to be familiar with :)\n\n# Instructions\n\nCalculate the Hamming distance between two DNA strands.\n\nWe read DNA using the letters C, A, G and T.\nTwo strands might look like this:\n\n    GAGCCTACTAACGGGAT\n    CATCGTAATGACGGCCT\n    ^ ^ ^  ^ ^    ^^\n\nThey have 7 differences, and therefore the Hamming distance is 7.\n\n## Implementation notes\n\nThe Hamming distance is only defined for sequences of equal length, so an attempt to calculate it between sequences of different lengths should not work.\n\n# Instructions append\n\n## Exception messages\n\nSometimes it is necessary to [raise an exception](https://docs.python.org/3/tutorial/errors.html#raising-exceptions). When you do this, you should always include a **meaningful error message** to indicate what the source of the error is. This makes your code more readable and helps significantly with debugging. For situations where you know that the error source will be a certain type, you can choose to raise one of the [built in error types](https://docs.python.org/3/library/exceptions.html#base-classes), but should still include a meaningful message.\n\nThis particular exercise requires that you use the [raise statement](https://docs.python.org/3/reference/simple_stmts.html#the-raise-statement) to \"throw\" a `ValueError` when the strands being checked are not the same length. The tests will only pass if you both `raise` the `exception` and include a message with it.\n\nTo raise a `ValueError` with a message, write the message as an argument to the `exception` type:\n\n```python\n# When the sequences being passed are not the same length.\nraise ValueError(\"Strands must be of equal length.\")\n```",
+  "oracle_tests": [
+    "hamming_test.py"
+  ],
+  "oracle_tier": "local_full",
+  "agent_test_targets": [
+    "hamming_test.py"
+  ],
+  "metadata": {
+    "source": "exercism/python",
+    "upstream_commit": "479f11b44b02337b0413e805b948491c2179615a",
+    "slug": "hamming",
+    "difficulty": "easy",
+    "solution_file": "hamming.py",
+    "test_file": "hamming_test.py"
+  }
+}
