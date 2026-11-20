@@ -71,11 +71,11 @@ harness   # interactive prompt loop (no conversation history)
 
 ## Tool & Output Conventions
 
-- **`list_files`:** Bounded ripgrep file listing (up to 200 paths, 64 KiB, 5s deadline). `pattern` uses Python `Path.match` glob syntax (`*.py`, `settings.py`), not regex alternation.
+- **`list_files`:** Bounded ripgrep file listing (up to 200 paths, 64 KiB, 5s deadline). `pattern` uses Python `Path.match` glob syntax (`*.py`, `settings.py`), not regex alternation; missing-directory errors include a workspace-root (`"."`) recovery hint.
 - **`search_code`:** Regular-expression `query` (up to 4096 UTF-8 bytes), optional `glob` (`Path.match`), and `max_results` (`1–200`). In `code_aware` mode, Tree-sitter ranks Python symbol definitions above comments and extracts bounded snippets.
 - **`read_file`:** Bounded UTF-8 line-range reads (up to 200 lines per call, 16 KiB output, 1 MiB file cap), returning the file's full SHA-256 digest.
-- **`edit_file`:** Workspace-confined exact-text replacement with SHA-256 precondition checks and protected-path guards.
-- **`run_tests`:** Runs only the current Python executable with `-m pytest -q -- TARGET` against configured allowlisted targets (an approval boundary, not an OS sandbox).
+- **`edit_file`:** Workspace-confined 1-based inclusive line-range replacement (`start_line`/`end_line`, with exact-text `old_text` fallback), automatic SHA-256 verification from the last `read_file` (rejecting edits to unread files), and protected-path guards.
+- **`run_tests`:** Runs only the current Python executable with `-m pytest -q --tb=short --maxfail=5 -- TARGET` against configured allowlisted targets (an approval boundary, not an OS sandbox), and optionally auto-runs after successful edits when enabled in `AUTO` mode (auto-disables on pytest exit code `5`).
 - **Stdout/Stderr & Exit Codes:** `harness run` writes only the final answer to stdout and status/metrics to stderr. Exit codes: `0` (completed), `1` (failure or limit reached), `2` (invalid invocation), `130` (Ctrl+C cancelled).
 
 ## Live Smoke Check

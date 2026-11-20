@@ -67,7 +67,7 @@
    - **Immediate `--auto-test` loop:** Aider runs `pytest` automatically after each edit without spending an extra tool-call turn deciding to invoke `run_tests`.
 3. **Actionable bottlenecks revealed in `internal`:**
    - **Latency (`190.0s` avg):** Requiring separate tool turns for `list_files` → `read_file` → `update_context` → `edit_file` (with exact SHA-256 + exact `old_text` match) → `run_tests` burns 6–15+ model calls on small exercises, causing `internal` to hit the 240s timeout even on easy tasks (`two-fer`, `raindrops`, `hamming`).
-   - **High-leverage next improvements (tracked as issues):**
+   - **High-leverage next improvements (implemented in [PR #85](https://github.com/reganvannguyen/efficient-code-agent/pull/85)):**
      1. Auto-fill `expected_sha256` from the last `read_file` ([Issue #82](https://github.com/reganvannguyen/efficient-code-agent/issues/82)) so 7B models don't burn turns on SHA-256 copy errors.
      2. Optionally auto-run configured `pytest` targets after a successful `edit_file` in `AUTO` mode ([Issue #83](https://github.com/reganvannguyen/efficient-code-agent/issues/83)), saving a full model turn per edit-test cycle.
 
@@ -81,3 +81,15 @@
   - Because `aider-chat==0.86.2` pins `scipy==1.15.3` whose `_spropack` shared library fails `dlopen` on this macOS version during `RepoMap` PageRank, Aider was run with `--map-tokens 0`.
 - **`mini-swe-agent` text-based config:** Because local `llama-server` ran without `--jinja` native tool-calling templates, `mini-swe-agent==2.4.6` was run with `--config mini_textbased.yaml --model-class litellm_textbased` and `MSWEA_CONFIGURED=true`.
 - **Sample size:** 30 runs per harness yields overlapping 95% Wilson CIs (`[24.6%, 57.7%]` vs `[11.8%, 40.9%]`), so per-task patterns and latency/timeout profiles are more informative than small percentage differences alone.
+
+
+## 6. Post-Benchmark Iteration (PR #85)
+
+Follow-up runs under the same `Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf` (`8192` context window) setup measured each improvement incrementally:
+
+- **Exercism 30-run `internal` v2 (#82 + #83, prior to line-range edits):** Matched v1 at **7 / 30** (`23.3%`, 95% Wilson CI `[11.8%, 40.9%]`, **187.05s** mean wall, **13.93** mean calls, **56,199** mean tokens across 28/30 runs with reported usage vs. v1's `190.01s` / `14.83` calls / `56,223` across 29/30 runs). Issue #82 eliminated all `invalid_arguments` edit failures (`23 → 0`) and Issue #83 sped up clean solves (**5** completed+resolved runs averaged **7.8** steps, **26,773** tokens, **95.4s** vs. v1's **11.9** steps, **40,660** tokens, **122.4s**), while exact `old_text` `conflict` errors remained unchanged (**38** across `19/30` runs).
+- **Line-range `edit_file` + compact `pytest` (`-q --tb=short --maxfail=5`) sanity checks:** Across **4** single-trial checks (`kindergarten-garden`, `two-fer`, `tournament`, `anagram`), edit `conflict`/`invalid_arguments` errors and `run_tests` `output_limit` kills both dropped to **0**:
+  - `exercism__two-fer`: **resolved** in **30.0s** / `6` calls / `12,602` tokens (up from `0/3` in v2).
+  - `exercism__anagram` *(regression check)*: **resolved** in **45.0s** / `7` calls / `17,357` tokens.
+  - `exercism__kindergarten-garden` and `exercism__tournament`: remained `unresolved` due to model logic/budget misses rather than tool failures.
+- **Multi-file lookup & working-memory smoke test ([`benchmarks/memory_lookup/`](../benchmarks/memory_lookup/), 5 tasks × 1 trial, `420s` timeout):** Added root `list_files` `{}` exploration guidance and dynamic `read_memory` schema gating (`runtime.py`), comparing `internal` (`editable_context`), `internal_no_notes` (`bounded_history`), and `mini-swe-agent==2.4.6`. `read_memory` calls dropped **23 → 0**, target file localization/patching rose to **5/5** (`internal`) and **4/5** (`internal_no_notes`) vs. **1/5** (`mini-swe-agent`, 4 `agent_error`s), and `internal` used **430,665** total tokens vs. **468,223** for `internal_no_notes`. All three arms remained **0/5** resolved because Qwen 7B still jumped to editing after reading 1–3 files instead of inspecting all 4 rule modules first.
