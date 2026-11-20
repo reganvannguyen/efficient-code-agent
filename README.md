@@ -2,7 +2,31 @@
 
 **A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
 
-> **Status:** The local chat command, stateless interactive loop, bounded read-only repository agent, and opt-in coding profile with approved edits and configured pytest runs are implemented. Runtime verification after the last edit remains future work.
+## Quickstart
+
+1. **Install the harness** (Python 3.9+ and `ripgrep` recommended):
+
+   ```sh
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e .
+   ```
+
+2. **Start any local OpenAI-compatible model server** (pick one):
+   - **llama.cpp** (default `http://127.0.0.1:8080`):
+     ```sh
+     llama-server -m /path/to/your-model.gguf --port 8080 -c 8192
+     ```
+   - **Ollama** (`http://127.0.0.1:11434`): `ollama serve`
+   - **LM Studio** (`http://127.0.0.1:1234`): start the Local Server in LM Studio
+
+3. **Launch the local web UI**:
+
+   ```sh
+   harness ui
+   ```
+
+   Open `http://127.0.0.1:8765`, click the server pill or **Settings** to pick a preset (`llama.cpp`, `Ollama`, or `LM Studio`) and auto-detect your model. Settings are saved to `~/.harness/config.json` and can be overridden with `HARNESS_BASE_URL` / `HARNESS_MODEL` or `--base-url` / `--model`.
 
 ## Why this project?
 

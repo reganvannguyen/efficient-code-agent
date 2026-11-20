@@ -20,6 +20,7 @@ from harness.agent.runtime import (
     run_agent,
 )
 from harness.agent.state import RunStatus
+from harness.config import resolve_server_settings
 from harness.context import LlamaTokenCounter, TokenBudget
 from harness.llama_client import ChatResponse, LlamaClientError, chat
 from harness.storage.database import SqliteRunRecorder
@@ -33,8 +34,8 @@ def _add_agent_options(
     default_max_tokens: int = 256,
 ) -> None:
     subparser.add_argument("--repo", type=Path, default=Path.cwd())
-    subparser.add_argument("--base-url", default="http://127.0.0.1:9931")
-    subparser.add_argument("--model", default="Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf")
+    subparser.add_argument("--base-url", default=None)
+    subparser.add_argument("--model", default=None)
     subparser.add_argument("--max-tokens", type=int, default=default_max_tokens)
     subparser.add_argument("--timeout", type=float, default=120)
     subparser.add_argument("--run-timeout", type=float, default=300)
@@ -103,8 +104,8 @@ def main(argv: list[str] | None = None) -> None:
     commands = parser.add_subparsers(dest="command", required=True)
     chat_parser = commands.add_parser("chat", help="send a prompt to a local model")
     chat_parser.add_argument("prompt")
-    chat_parser.add_argument("--base-url", default="http://127.0.0.1:9931")
-    chat_parser.add_argument("--model", default="Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf")
+    chat_parser.add_argument("--base-url", default=None)
+    chat_parser.add_argument("--model", default=None)
     chat_parser.add_argument("--timeout", type=float, default=120)
     chat_parser.add_argument("--max-tokens", type=int, default=256)
     run_parser = commands.add_parser("run", help="answer a task about a repository")
@@ -126,8 +127,8 @@ def main(argv: list[str] | None = None) -> None:
     ui_parser.add_argument("--host", default="127.0.0.1")
     ui_parser.add_argument("--port", type=int, default=8765)
     ui_parser.add_argument("--repo", type=Path, default=None)
-    ui_parser.add_argument("--base-url", default="http://127.0.0.1:9931")
-    ui_parser.add_argument("--model", default="Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf")
+    ui_parser.add_argument("--base-url", default=None)
+    ui_parser.add_argument("--model", default=None)
     ui_parser.add_argument(
         "--db-path",
         type=Path,
@@ -140,6 +141,13 @@ def main(argv: list[str] | None = None) -> None:
     )
     ui_parser.add_argument("--no-browser", action="store_true")
     args = parser.parse_args(args_list)
+    try:
+        args.base_url, args.model = resolve_server_settings(
+            cli_base_url=args.base_url,
+            cli_model=args.model,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.command == "run":
         _run(args, parser)
         return

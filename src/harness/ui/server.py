@@ -17,8 +17,6 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.error import URLError
-from urllib.request import urlopen
 
 from harness.agent.events import RunEvent
 from harness.agent.runtime import (
@@ -30,20 +28,24 @@ from harness.agent.runtime import (
     run_agent,
 )
 from harness.agent.state import AgentRun
+from harness.config import (
+    DEFAULT_BASE_URL,
+    DEFAULT_CONFIG_PATH,
+    save_user_config,
+    validate_local_base_url,
+)
 from harness.context import (
     LlamaTokenCounter,
     TokenBudget,
     estimate_tokens,
     validate_scope_id,
 )
-from harness.llama_client import chat
+from harness.llama_client import chat, probe_server
 from harness.storage.database import SqliteRunRecorder, load_run_record
 from harness.tools.policy import ApprovalRequest, ToolMode, ToolPolicy
 
 _INDEX_HTML_PATH = Path(__file__).with_name("index.html")
-_START_LLAMA_CMD = (
-    'llama-server -m "$HOME/models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf" -c 8192'
-)
+_START_LLAMA_CMD = "llama-server -m /path/to/model.gguf --port 8080 -c 8192"
 _MAX_SESSION_TURNS = 6
 _MAX_TURN_REPLY_CHARS = 600
 _MAX_CHAT_HISTORY_CHARS = 2400
@@ -146,17 +148,19 @@ class UISessionManager:
         self,
         *,
         default_repo: Path | None = None,
-        base_url: str = "http://127.0.0.1:9931",
-        model_name: str = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+        base_url: str = DEFAULT_BASE_URL,
+        model_name: str = "",
         db_path: Path = Path(".runs/traces.db"),
         memory_dir: Path = Path(".harness/runs"),
+        config_path: Path = DEFAULT_CONFIG_PATH,
         model_callable: Model | None = None,
     ) -> None:
         self.default_repo = default_repo.resolve() if default_repo is not None else None
-        self.base_url = base_url.rstrip("/")
-        self.model_name = model_name
+        self.base_url = validate_local_base_url(base_url)
+        self.model_name = model_name.strip()
         self.db_path = db_path
         self.memory_dir = memory_dir
+        self.config_path = config_path
         self.model_callable = model_callable
         self._lock = threading.Lock()
         self._runs: dict[str, _UIRunState] = {}
@@ -197,22 +201,51 @@ class UISessionManager:
             conn.commit()
 
     def check_health(self) -> dict[str, object]:
-        """Probe llama-server /health with a short timeout."""
-        ok = False
-        try:
-            with urlopen(f"{self.base_url}/health", timeout=1.0) as resp:
-                ok = resp.status == 200
-        except (URLError, TimeoutError, OSError):
-            ok = False
+        """Probe the configured localhost model server via /v1/models or /health."""
+        with self._lock:
+            base_url = self.base_url
+            configured_model = self.model_name
+        ok, models = probe_server(base_url, timeout=1.5)
+        effective_model = configured_model or (models[0] if models else "")
         return {
+            "server_ok": ok,
             "llama_server_ok": ok,
-            "base_url": self.base_url,
-            "model": self.model_name,
+            "base_url": base_url,
+            "model": effective_model,
+            "configured_model": configured_model,
+            "models": models,
             "default_repo": str(self.default_repo)
             if self.default_repo is not None
             else "",
             "start_command": _START_LLAMA_CMD,
         }
+
+    def get_config(self) -> dict[str, object]:
+        """Return the active localhost server URL and model configuration."""
+        with self._lock:
+            return {"base_url": self.base_url, "model": self.model_name}
+
+    def update_config(self, payload: dict[str, Any]) -> dict[str, object]:
+        """Validate, apply, and persist updated localhost server URL and model."""
+        raw_url = payload.get("base_url")
+        raw_model = payload.get("model")
+        with self._lock:
+            new_url = (
+                validate_local_base_url(raw_url)
+                if raw_url is not None
+                else self.base_url
+            )
+            if raw_model is not None:
+                if not isinstance(raw_model, str):
+                    raise ValueError("model must be a string")
+                new_model = raw_model.strip()
+            else:
+                new_model = self.model_name
+            self.base_url = new_url
+            self.model_name = new_model
+            config_path = self.config_path
+        save_user_config(base_url=new_url, model=new_model, path=config_path)
+        return self.check_health()
 
     def start_run(self, payload: dict[str, Any]) -> dict[str, object]:
         """Validate payload and start an agent run in a background thread."""
@@ -346,10 +379,10 @@ class UISessionManager:
         lines.reverse()
         history_block = "\n\n".join(lines)
         return (
-            "Previous conversation in this session (user prompts and final replies only; "
-            "raw tool outputs omitted):\n"
-            f"{history_block}\n\n"
-            f"Current user request:\n{task}"
+            "Current user request (answer THIS request, not prior turns):\n"
+            f"{task.strip()}\n\n"
+            "Prior conversation (background context only):\n"
+            f"{history_block}"
         )
 
     def _record_session_turn(
@@ -463,10 +496,18 @@ class UISessionManager:
             model = self.model_callable
             token_counter = estimate_tokens
         else:
+            with self._lock:
+                run_base_url = self.base_url
+                run_model_name = self.model_name
+            if not run_model_name:
+                _, detected_models = probe_server(run_base_url, timeout=1.5)
+                run_model_name = (
+                    detected_models[0] if detected_models else "local-model"
+                )
             model = partial(
                 chat,
-                base_url=self.base_url,
-                model=self.model_name,
+                base_url=run_base_url,
+                model=run_model_name,
                 max_tokens=1024,
                 response_schema=action_schema(
                     policy,
@@ -475,7 +516,7 @@ class UISessionManager:
                 ),
                 system_prompt=system_prompt,
             )
-            token_counter = LlamaTokenCounter(base_url=self.base_url)
+            token_counter = LlamaTokenCounter(base_url=run_base_url)
 
         recorder = SqliteRunRecorder(db_path=self.db_path)
         with self._lock:
@@ -523,12 +564,14 @@ class UISessionManager:
                     output_reserve=min(1024, context_window // 4),
                 ),
                 token_counter=token_counter,
+                max_tool_output_bytes=max(4096, min(16384, context_window)),
                 retrieval_backend=(
                     None
                     if chat_only or retrieval_mode == "lexical_only"
                     else retrieval_mode
                 ),
                 chat_only=chat_only,
+                record_turn_summary=False,
             )
             with self._lock:
                 state._agent_run_id = run.run_id
@@ -583,24 +626,85 @@ class UISessionManager:
             return {"ok": True, "cancelled": True}
 
     def pick_repo(self) -> dict[str, object]:
-        """Open a native macOS Finder folder picker and return the chosen POSIX path."""
-        if sys.platform != "darwin":
-            raise RuntimeError("Native folder picker is only supported on macOS")
-        proc = subprocess.run(
+        """Open a native OS folder picker and return the chosen directory path."""
+        if sys.platform == "darwin":
+            proc = subprocess.run(
+                [
+                    "osascript",
+                    "-e",
+                    'POSIX path of (choose folder with prompt "Select repository folder")',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=120,
+                check=False,
+            )
+            if proc.returncode != 0:
+                return {"cancelled": True, "path": None}
+            chosen = proc.stdout.strip().rstrip("/")
+            return {"cancelled": False, "path": chosen or "/"}
+
+        if sys.platform == "win32":
+            ps_script = (
+                "Add-Type -AssemblyName System.Windows.Forms; "
+                "$d = New-Object System.Windows.Forms.FolderBrowserDialog; "
+                "$d.Description = 'Select repository folder'; "
+                "if ($d.ShowDialog() -eq 'OK') { Write-Output $d.SelectedPath }"
+            )
+            ps = shutil.which("powershell") or shutil.which("pwsh")
+            if ps is not None:
+                proc = subprocess.run(
+                    [ps, "-NoProfile", "-Command", ps_script],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                chosen = proc.stdout.strip()
+                if proc.returncode != 0 or not chosen:
+                    return {"cancelled": True, "path": None}
+                return {"cancelled": False, "path": chosen}
+
+        for cmd in (
             [
-                "osascript",
-                "-e",
-                'POSIX path of (choose folder with prompt "Select repository folder")',
+                "zenity",
+                "--file-selection",
+                "--directory",
+                "--title=Select repository folder",
             ],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            check=False,
-        )
-        if proc.returncode != 0:
-            return {"cancelled": True, "path": None}
-        chosen = proc.stdout.strip().rstrip("/")
-        return {"cancelled": False, "path": chosen or "/"}
+            ["kdialog", "--getexistingdirectory", str(Path.home())],
+        ):
+            if shutil.which(cmd[0]) is not None:
+                proc = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=False,
+                )
+                if proc.returncode != 0:
+                    return {"cancelled": True, "path": None}
+                chosen = proc.stdout.strip().rstrip("/")
+                return {"cancelled": False, "path": chosen or "/"}
+
+        try:
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root_tk = tk.Tk()
+            root_tk.withdraw()
+            chosen = filedialog.askdirectory(title="Select repository folder")
+            root_tk.destroy()
+            if not chosen:
+                return {"cancelled": True, "path": None}
+            return {"cancelled": False, "path": chosen}
+        except Exception:
+            return {
+                "cancelled": False,
+                "path": None,
+                "unsupported": True,
+                "error": "No native folder picker is available on this system.",
+            }
 
     def list_history(self, limit: int = 25) -> list[dict[str, object]]:
         if not self.db_path.is_file():
@@ -692,8 +796,6 @@ class UISessionManager:
 
 
 def _make_handler(manager: UISessionManager) -> type[BaseHTTPRequestHandler]:
-    html_bytes = _INDEX_HTML_PATH.read_bytes()
-
     class _Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             return
@@ -717,14 +819,19 @@ def _make_handler(manager: UISessionManager) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path == "/":
+                html_bytes = _INDEX_HTML_PATH.read_bytes()
                 self.send_response(HTTPStatus.OK)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(html_bytes)))
                 self.end_headers()
                 self.wfile.write(html_bytes)
                 return
             if path == "/api/health":
                 self._send_json(HTTPStatus.OK, manager.check_health())
+                return
+            if path == "/api/config":
+                self._send_json(HTTPStatus.OK, manager.get_config())
                 return
             if path == "/api/history":
                 self._send_json(HTTPStatus.OK, {"runs": manager.list_history()})
@@ -763,6 +870,13 @@ def _make_handler(manager: UISessionManager) -> type[BaseHTTPRequestHandler]:
                 body = self._read_json()
             except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+
+            if path == "/api/config":
+                try:
+                    self._send_json(HTTPStatus.OK, manager.update_config(body))
+                except ValueError as exc:
+                    self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
                 return
 
             if path == "/api/pick-repo":
@@ -835,8 +949,8 @@ def serve_ui(
     host: str = "127.0.0.1",
     port: int = 8765,
     default_repo: Path | None = None,
-    base_url: str = "http://127.0.0.1:9931",
-    model_name: str = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+    base_url: str = DEFAULT_BASE_URL,
+    model_name: str = "",
     db_path: Path = Path(".runs/traces.db"),
     memory_dir: Path = Path(".harness/runs"),
     open_browser: bool = True,

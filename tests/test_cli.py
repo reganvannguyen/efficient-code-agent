@@ -232,6 +232,11 @@ def test_run_command_defaults_forward_model_configuration(
             "complete", summary="A greeting is formed from the prefix and name."
         )
 
+    monkeypatch.delenv("HARNESS_BASE_URL", raising=False)
+    monkeypatch.delenv("HARNESS_MODEL", raising=False)
+    monkeypatch.setattr(
+        "harness.config.DEFAULT_CONFIG_PATH", tmp_path / "no-config.json"
+    )
     monkeypatch.setattr(cli, "chat", fake_chat)
     cli.main(["run", "Explain how greeting is formed", "--repo", str(repo)])
 
@@ -249,8 +254,8 @@ def test_run_command_defaults_forward_model_configuration(
         <= DEFAULT_MAX_PROMPT_BYTES
     )
     assert requests[0][1] == {
-        "base_url": "http://127.0.0.1:9931",
-        "model": "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+        "base_url": "http://127.0.0.1:8080",
+        "model": "",
         "max_tokens": 256,
         "timeout": pytest.approx(120),
         "response_schema": READ_ONLY_ACTION_SCHEMA,
