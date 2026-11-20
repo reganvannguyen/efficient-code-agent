@@ -74,6 +74,10 @@
 ## 5. Unmatched Parameters & Threats to Validity
 
 - **External harness differences:** This is an external harness comparison, not a controlled single-variable ablation. Each harness uses its own system prompt, edit mechanism, and loop structure.
-- **Aider macOS `scipy` workaround:** `aider-chat==0.86.2` pins `scipy==1.15.3`, whose `_spropack` shared library fails `dlopen` on this macOS version when `RepoMap` runs `networkx.pagerank()`. Aider was therefore run with `--map-tokens 0` and passed `{solution_file}` explicitly (matching Aider's own Exercism benchmark CLI pattern).
+- **Aider task-setup & architecture differences (important context for interpreting 40.0%):**
+  - Each Exercism exercise has **1 solution file** (10–80 lines) and **1 test file**, and the prompt names both files for all three harnesses.
+  - Following Aider's standard Exercism benchmark CLI pattern, `{solution_file}` was passed directly on Aider's command line—so Aider **pre-loaded the file contents into Turn 1** automatically, skipping the 2–4 autonomous read/discovery turns (~40–60s) required by `internal` and `mini-swe-agent`.
+  - Aider also defaulted to its **`whole` edit format** (rewriting the entire file in one response), which avoids `old_text` / SHA-256 errors on tiny 20–80 line Exercism stubs, but does **not** scale to large multi-file repositories under an `8192`-token local context window (where bounded `read_file` + targeted `edit_file` + `code_aware` retrieval are necessary).
+  - Because `aider-chat==0.86.2` pins `scipy==1.15.3` whose `_spropack` shared library fails `dlopen` on this macOS version during `RepoMap` PageRank, Aider was run with `--map-tokens 0`.
 - **`mini-swe-agent` text-based config:** Because local `llama-server` ran without `--jinja` native tool-calling templates, `mini-swe-agent==2.4.6` was run with `--config mini_textbased.yaml --model-class litellm_textbased` and `MSWEA_CONFIGURED=true`.
 - **Sample size:** 30 runs per harness yields overlapping 95% Wilson CIs (`[24.6%, 57.7%]` vs `[11.8%, 40.9%]`), so per-task patterns and latency/timeout profiles are more informative than small percentage differences alone.
