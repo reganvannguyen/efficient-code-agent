@@ -77,7 +77,16 @@ def run_tests(
     cancelled: object = None,
 ) -> ToolResult:
     """Run the fixed pytest preset, retaining bounded output and reaping groups."""
-    argv = (sys.executable, "-m", "pytest", "-q", "--", target)
+    argv = (
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--tb=short",
+        "--maxfail=5",
+        "--",
+        target,
+    )
     base = {"preset": "pytest", "target": target, "argv": list(argv)}
     metadata = {
         "tool": "run_tests",

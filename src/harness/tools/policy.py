@@ -28,8 +28,11 @@ class ToolPolicy:
     run_tests: ToolMode = ToolMode.ASK
     test_targets: tuple[str, ...] = (".",)
     test_timeout: float = 60.0
+    auto_test_after_edit: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.auto_test_after_edit, bool):
+            raise ValueError("auto_test_after_edit must be a boolean")
         if not isinstance(self.edit_file, ToolMode) or not isinstance(
             self.run_tests, ToolMode
         ):

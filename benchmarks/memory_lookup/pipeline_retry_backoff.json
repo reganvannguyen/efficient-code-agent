@@ -1,0 +1,20 @@
+{
+  "task_id": "mem__pipeline_retry_backoff",
+  "repo": "/Users/regannguyen/projects/efficient-code-agent/.runs/memory_lookup_repos/pipeline_retry_backoff",
+  "base_commit": "6b0cd52d880abfb8c5ff94159381d6d9c2708621",
+  "issue_text": "The job retry scheduler is retrying fatal errors, scheduling one more attempt than each queue allows, and exceeding the global backoff ceiling.\n\nInvestigate the job runner package and fix retry planning so that:\n1. Only explicitly retryable (non-fatal) error codes are retried.\n2. Once a job reaches the queue's configured max_attempts, no further retry is scheduled.\n3. Exponential backoff delays are clamped to the global maximum delay.\n\nEnsure all tests pass.",
+  "oracle_tests": [
+    "tests/test_scheduler.py"
+  ],
+  "oracle_tier": "local_full",
+  "agent_test_targets": [
+    "tests/test_scheduler.py"
+  ],
+  "metadata": {
+    "source": "local/memory_lookup",
+    "slug": "pipeline_retry_backoff",
+    "difficulty": "medium",
+    "test_file": "tests/test_scheduler.py",
+    "file_count": 16
+  }
+}
