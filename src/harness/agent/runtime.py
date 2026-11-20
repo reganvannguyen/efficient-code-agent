@@ -103,6 +103,23 @@ READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "const": "tool"},
+                "name": {"type": "string", "const": "list_files"},
+                "arguments": {
+                    "type": "object",
+                    "properties": {
+                        "directory": {"type": "string", "minLength": 1},
+                        "pattern": {"type": "string", "minLength": 1},
+                    },
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["kind", "name", "arguments"],
+            "additionalProperties": False,
+        },
+        {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "const": "tool"},
                 "name": {"type": "string", "const": "search_code"},
                 "arguments": {
                     "type": "object",
@@ -116,23 +133,6 @@ READ_ONLY_ACTION_SCHEMA: dict[str, object] = {
                         },
                     },
                     "required": ["query"],
-                    "additionalProperties": False,
-                },
-            },
-            "required": ["kind", "name", "arguments"],
-            "additionalProperties": False,
-        },
-        {
-            "type": "object",
-            "properties": {
-                "kind": {"type": "string", "const": "tool"},
-                "name": {"type": "string", "const": "list_files"},
-                "arguments": {
-                    "type": "object",
-                    "properties": {
-                        "directory": {"type": "string", "minLength": 1},
-                        "pattern": {"type": "string", "minLength": 1},
-                    },
                     "additionalProperties": False,
                 },
             },
@@ -323,6 +323,7 @@ def run_agent(
     tool_artifacts_dir: Path | None = None,
     retrieval_backend: RetrievalBackend | str | None = None,
     chat_only: bool = False,
+    record_turn_summary: bool = True,
 ) -> AgentRun:
     """Run a cooperative, bounded tool loop for one repository task.
 
@@ -425,11 +426,13 @@ def run_agent(
             }
         )
         memory_store.initialize(
-            task,
+            _extract_current_task(task),
             run_id=run.run_id,
             session_id=session_id,
             policy_summary=policy_summary,
         )
+        if session_id is not None:
+            _update_working_goal(memory_store, _extract_current_task(task))
     effective_manifest: dict[str, object] | None = (
         dict(manifest) if manifest is not None else None
     )
@@ -683,7 +686,11 @@ def run_agent(
                         continue
                 run.verification_quality = quality
                 run.final_response = action.summary
-                if session_id is not None and memory_store is not None:
+                if (
+                    record_turn_summary
+                    and session_id is not None
+                    and memory_store is not None
+                ):
                     _record_session_turn_summary(memory_store, task, action.summary)
                 _stop(run, RunStatus.COMPLETED, "model_complete", emit)
                 return run
@@ -1682,13 +1689,69 @@ def _execute_context_edit(
     )
 
 
+_PRIOR_TURNS_MARKERS = (
+    "\n\nPrior conversation (background context only):",
+    "\n\nPrior turns in this session",
+)
+_CURRENT_REQUEST_PREFIX = (
+    "Current user request (answer THIS request, not prior turns):\n"
+)
+_CURRENT_REQUEST_MARKER = "\n\nCurrent user request:\n"
+
+
+def _extract_current_task(task: str) -> str:
+    """Return the active user request without prepended/appended session history."""
+    cleaned = task
+    for marker in _PRIOR_TURNS_MARKERS:
+        if marker in cleaned:
+            cleaned = cleaned.split(marker, 1)[0]
+            break
+    if cleaned.startswith(_CURRENT_REQUEST_PREFIX):
+        cleaned = cleaned[len(_CURRENT_REQUEST_PREFIX) :]
+    elif _CURRENT_REQUEST_MARKER in cleaned:
+        cleaned = cleaned.split(_CURRENT_REQUEST_MARKER, 1)[1]
+    return cleaned.strip()
+
+
+def _update_working_goal(memory_store: WorkingMemoryStore, goal: str) -> None:
+    """Refresh the ## Goal section in working.md for a new turn in an existing session."""
+    clean_goal = goal.strip()
+    if not clean_goal:
+        return
+    try:
+        current = memory_store.read_note("working.md")
+    except MemoryStorageError:
+        return
+    lines = current.splitlines()
+    goal_idx: int | None = None
+    for idx, line in enumerate(lines):
+        if line.strip() == "## Goal":
+            goal_idx = idx
+            break
+    if goal_idx is None:
+        return
+    next_heading = len(lines)
+    for idx in range(goal_idx + 1, len(lines)):
+        if lines[idx].startswith("## "):
+            next_heading = idx
+            break
+    updated_lines = lines[: goal_idx + 1] + [clean_goal, ""] + lines[next_heading:]
+    updated = "\n".join(updated_lines).rstrip() + "\n"
+    if updated == current:
+        return
+    try:
+        memory_store.write_note("working.md", updated)
+    except MemoryStorageError:
+        pass
+
+
 def _record_session_turn_summary(
     memory_store: WorkingMemoryStore,
     task: str,
     summary: str,
 ) -> None:
     """Append a compact turn summary to working.md when a session turn skipped update_context."""
-    task_excerpt = _utf8_excerpt(" ".join(task.split()), 200)
+    task_excerpt = _utf8_excerpt(" ".join(_extract_current_task(task).split()), 200)
     summary_excerpt = _utf8_excerpt(" ".join(summary.split()), 400)
     entry = (
         f"\n## Completed Turn\n- Task: {task_excerpt}\n- Outcome: {summary_excerpt}\n"

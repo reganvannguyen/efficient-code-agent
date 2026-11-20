@@ -9,6 +9,8 @@ from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from harness.config import DEFAULT_BASE_URL
+
 
 class LlamaClientError(Exception):
     """Raised when a local model request fails or returns an invalid response."""
@@ -40,8 +42,8 @@ class ChatResponse:
 def chat(
     prompt: str,
     *,
-    base_url: str = "http://127.0.0.1:9931",
-    model: str = "Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf",
+    base_url: str = DEFAULT_BASE_URL,
+    model: str = "local-model",
     timeout: float = 120,
     max_tokens: int = 256,
     response_schema: dict[str, object] | None = None,
@@ -74,7 +76,7 @@ def chat(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
     request_payload = {
-        "model": model,
+        "model": model.strip() or "local-model",
         "messages": messages,
         "max_tokens": max_tokens,
         "stream": False,
@@ -143,10 +145,50 @@ def _usage_count(usage: object, key: str) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+def probe_server(
+    base_url: str = DEFAULT_BASE_URL,
+    *,
+    timeout: float = 1.5,
+) -> tuple[bool, list[str]]:
+    """Probe an OpenAI-compatible local server via /v1/models with /health fallback."""
+    root = base_url.rstrip("/")
+    try:
+        with urlopen(f"{root}/v1/models", timeout=timeout) as response:
+            if response.status == 200:
+                body = response.read(MAX_RESPONSE_BODY_BYTES)
+                try:
+                    data = json.loads(body)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return True, []
+                models: list[str] = []
+                raw_items = data.get("data") if isinstance(data, dict) else None
+                if isinstance(raw_items, list):
+                    for item in raw_items:
+                        if isinstance(item, dict):
+                            mid = item.get("id")
+                            if (
+                                isinstance(mid, str)
+                                and mid.strip()
+                                and mid not in models
+                            ):
+                                models.append(mid.strip())
+                return True, models
+    except HTTPError:
+        pass
+    except (URLError, TimeoutError, OSError, HTTPException):
+        return False, []
+
+    try:
+        with urlopen(f"{root}/health", timeout=timeout) as response:
+            return response.status == 200, []
+    except (HTTPError, URLError, TimeoutError, OSError, HTTPException):
+        return False, []
+
+
 def tokenize(
     content: str,
     *,
-    base_url: str = "http://127.0.0.1:9931",
+    base_url: str = DEFAULT_BASE_URL,
     timeout: float = 10.0,
 ) -> list[int]:
     """Tokenize text using the llama.cpp server's /tokenize endpoint."""

@@ -18,7 +18,7 @@ from harness.tools import ToolResult, execute_tool
 
 
 def test_read_only_action_schema_has_exact_tool_and_completion_variants() -> None:
-    search_code, list_files, read_file, completion = READ_ONLY_ACTION_SCHEMA["oneOf"]
+    list_files, search_code, read_file, completion = READ_ONLY_ACTION_SCHEMA["oneOf"]
 
     assert READ_ONLY_ACTION_SCHEMA["type"] == "object"
     for tool in (list_files, read_file):

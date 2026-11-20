@@ -42,7 +42,7 @@ def estimate_tokens(text: str) -> int:
 class LlamaTokenCounter:
     """Token counter backed by llama.cpp's ``/tokenize`` endpoint with optional fallback."""
 
-    base_url: str = "http://127.0.0.1:9931"
+    base_url: str = "http://127.0.0.1:8080"
     timeout: float = 5.0
     fallback: Callable[[str], int] | None = estimate_tokens
 

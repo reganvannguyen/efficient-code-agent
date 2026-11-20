@@ -55,6 +55,14 @@ def test_ui_server_binds_localhost_only_and_validates_inputs(tmp_path: Path) -> 
             html = resp.read().decode("utf-8")
         assert resp.status == 200
         assert "Efficient Code Agent" in html
+        assert 'id="sessionsBtn"' in html
+        assert 'id="sessionsMenu"' in html
+        assert 'id="newChatBtn"' in html
+        assert 'id="historyPane"' not in html
+        assert 'id="inspectorResizer"' in html
+        assert 'id="browseRepoBtn"' in html
+        assert 'id="repoInput"' not in html
+        assert "scrollbar-width: none;" in html
         assert "https://" not in html  # zero external CDN dependencies
 
         status, health = _http_json(f"{base}/api/health")
@@ -242,10 +250,12 @@ def test_ui_server_passes_session_chat_history_on_followup(tmp_path: Path) -> No
             assert state.get("status") == "completed"
 
         assert len(seen_prompts) == 3
-        assert "Previous conversation in this session" not in seen_prompts[0]
+        assert "Prior turns in this session" not in seen_prompts[0]
         assert "User: first question" in seen_prompts[1]
         assert "Assistant: reply-1" in seen_prompts[1]
-        assert "Current user request:\nfollow up question" in seen_prompts[1]
+        assert seen_prompts[1].index("follow up question") < seen_prompts[1].index(
+            "User: first question"
+        )
         assert "Previous conversation in this session" not in seen_prompts[2]
     finally:
         server.shutdown()
@@ -356,6 +366,15 @@ def test_ui_server_no_repo_chat_only_and_persistent_session_resume(
         assert state2.get("status") == "completed"
         assert "User: explain quicksort" in seen_prompts[1]
         assert "Assistant: chat-1" in seen_prompts[1]
+        assert seen_prompts[1].index("give an example") < seen_prompts[1].index(
+            "User: explain quicksort"
+        )
+        working_after = (memory_dir / "s-persist" / "working.md").read_text(
+            encoding="utf-8"
+        )
+        assert "## Goal\ngive an example" in working_after
+        assert "## Completed Turn" not in working_after
+        assert "Prior conversation" not in working_after
 
         del_status, del_body = _http_json(
             f"{base2}/api/sessions/s-persist/delete", method="POST", payload={}
@@ -370,3 +389,94 @@ def test_ui_server_no_repo_chat_only_and_persistent_session_resume(
     finally:
         server2.shutdown()
         server2.server_close()
+
+
+def test_ui_server_config_persistence_model_detection_and_picker_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from harness.config import load_user_config, resolve_server_settings
+
+    cfg_path = tmp_path / "config.json"
+    manager = UISessionManager(
+        default_repo=None,
+        base_url="http://127.0.0.1:19998",
+        model_name="",
+        db_path=tmp_path / "traces.db",
+        memory_dir=tmp_path / "mem",
+        config_path=cfg_path,
+    )
+    server = create_ui_server(manager, host="127.0.0.1", port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        base = f"http://127.0.0.1:{server.server_port}"
+
+        # Reject non-localhost URLs
+        bad_status, bad_body = _http_json(
+            f"{base}/api/config",
+            method="POST",
+            payload={"base_url": "https://example.com:8080", "model": "x"},
+        )
+        assert bad_status == 400
+        assert "localhost" in str(bad_body["error"])
+
+        # Accept localhost URL, persist to config.json, and auto-detect models
+        monkeypatch.setattr(
+            "harness.ui.server.probe_server",
+            lambda url, timeout=1.5: (True, ["qwen2.5-coder:7b", "llama3:8b"]),
+        )
+        ok_status, ok_body = _http_json(
+            f"{base}/api/config",
+            method="POST",
+            payload={"base_url": "http://127.0.0.1:11434/", "model": ""},
+        )
+        assert ok_status == 200
+        assert ok_body["server_ok"] is True
+        assert ok_body["base_url"] == "http://127.0.0.1:11434"
+        assert ok_body["model"] == "qwen2.5-coder:7b"
+        assert ok_body["models"] == ["qwen2.5-coder:7b", "llama3:8b"]
+        assert load_user_config(cfg_path) == {
+            "base_url": "http://127.0.0.1:11434",
+            "model": "",
+        }
+
+        # Precedence: CLI > env > config.json > default
+        monkeypatch.delenv("HARNESS_BASE_URL", raising=False)
+        monkeypatch.delenv("HARNESS_MODEL", raising=False)
+        assert resolve_server_settings(config_path=cfg_path) == (
+            "http://127.0.0.1:11434",
+            "",
+        )
+        monkeypatch.setenv("HARNESS_BASE_URL", "http://localhost:1234")
+        monkeypatch.setenv("HARNESS_MODEL", "env-model")
+        assert resolve_server_settings(config_path=cfg_path) == (
+            "http://localhost:1234",
+            "env-model",
+        )
+        assert resolve_server_settings(
+            cli_base_url="http://127.0.0.1:8080",
+            cli_model="cli-model",
+            config_path=cfg_path,
+        ) == ("http://127.0.0.1:8080", "cli-model")
+
+        # Headless Linux fallback returns unsupported=True instead of crashing
+        monkeypatch.setattr("harness.ui.server.sys.platform", "linux")
+        monkeypatch.setattr("harness.ui.server.shutil.which", lambda _cmd: None)
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _no_tk(name, *args, **kwargs):
+            if name == "tkinter":
+                raise ImportError("no tkinter")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _no_tk)
+        pick_status, pick_body = _http_json(
+            f"{base}/api/pick-repo", method="POST", payload={}
+        )
+        assert pick_status == 200
+        assert pick_body["unsupported"] is True
+    finally:
+        server.shutdown()
+        server.server_close()
