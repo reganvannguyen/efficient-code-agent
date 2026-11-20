@@ -240,3 +240,67 @@ def test_coding_mode_without_edits_completes_as_unverified(tmp_path: Path) -> No
     assert run.status is RunStatus.COMPLETED
     assert run.stop_reason == "model_complete"
     assert run.verification_quality is VerificationQuality.UNVERIFIED
+
+
+def test_duplicate_tool_call_nudges_blocks_temporarily_and_reenables(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    seen_schemas: list[list[str]] = []
+    actions = iter(
+        [
+            _tool("list_files", {}),
+            _tool("list_files", {}),  # repeat #2 -> blocked duplicate nudge
+            _tool("list_files", {}),  # repeat #3 -> temp block list_files on next turn
+            _tool("read_file", {"path": "app.py"}),  # different tool -> clears block
+            _tool("list_files", {}),  # re-enabled after using another tool
+            {"kind": "complete", "summary": "Recovered after nudge and block."},
+        ]
+    )
+
+    def _model(
+        prompt: str,
+        *,
+        timeout: object = None,
+        response_schema: object = None,
+    ) -> ChatResponse:
+        del prompt, timeout
+        if isinstance(response_schema, dict):
+            names = [
+                v["properties"]["name"]["const"]
+                for v in response_schema.get("oneOf", [])  # type: ignore[union-attr]
+                if isinstance(v, dict)
+                and isinstance(v.get("properties"), dict)
+                and "name" in v["properties"]
+            ]
+            seen_schemas.append(names)
+        return _response(next(actions))
+
+    from functools import partial
+
+    from harness.agent.runtime import READ_ONLY_ACTION_SCHEMA
+
+    wrapped_model = partial(_model, response_schema=READ_ONLY_ACTION_SCHEMA)
+    run = run_agent(
+        "Inspect app.py",
+        tmp_path,
+        model=wrapped_model,
+        max_model_calls=10,
+        max_steps=10,
+    )
+
+    assert run.status is RunStatus.COMPLETED
+    assert run.final_response == "Recovered after nudge and block."
+    # On turn 4 (index 3), list_files was temporarily omitted from response_schema
+    assert "list_files" in seen_schemas[0]
+    assert "list_files" not in seen_schemas[3]
+    # On turn 5 (index 4), after calling read_file, list_files is restored
+    assert "list_files" in seen_schemas[4]
+
+    error_codes = [
+        ev.data.get("error_code")
+        for ev in run.events
+        if ev.event_type.value == "tool_result"
+    ]
+    assert "duplicate_tool_call" in error_codes
+    assert "tool_temporarily_blocked" in error_codes

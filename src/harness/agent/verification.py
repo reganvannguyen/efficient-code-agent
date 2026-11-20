@@ -20,43 +20,78 @@ class VerificationQuality(str, Enum):
     UNVERIFIED = "unverified"
 
 
+class LoopIntervention(str, Enum):
+    """Graduated response to repetitive identical tool actions."""
+
+    ALLOW = "allow"
+    BLOCK_DUPLICATE = "block_duplicate"
+    TEMP_BLOCK_TOOL = "temp_block_tool"
+    STOP = "stop"
+
+
 @dataclass
 class NoProgressTracker:
-    """Tracks repetitive actions and rejected completions to prevent infinite loops."""
+    """Tracks repetitive actions and rejected completions with graduated intervention."""
 
-    max_repetitions: int = 4
+    max_repetitions: int = 6
+    max_completion_rejections: int = 4
     identical_tool_streak: int = 0
     last_action_signature: tuple[str, str] | None = None
+    temporarily_blocked_tool: str | None = None
     rejected_completion_streak: int = 0
 
-    def record_action(self, name: str, arguments: dict[str, object]) -> bool:
-        """Record a tool invocation. Return True if the identical action limit is hit."""
+    def evaluate_action(
+        self, name: str, arguments: dict[str, object]
+    ) -> LoopIntervention:
+        """Evaluate a tool call before execution and return the graduated action."""
         try:
             canonical_args = json.dumps(arguments, sort_keys=True)
         except (TypeError, ValueError):
             canonical_args = str(arguments)
         signature = (name, canonical_args)
 
+        self.rejected_completion_streak = 0
+
+        if (
+            self.temporarily_blocked_tool is not None
+            and name == self.temporarily_blocked_tool
+        ):
+            self.identical_tool_streak += 1
+            if self.identical_tool_streak >= self.max_repetitions:
+                return LoopIntervention.STOP
+            return LoopIntervention.TEMP_BLOCK_TOOL
+
         if signature == self.last_action_signature:
             self.identical_tool_streak += 1
-        else:
-            self.last_action_signature = signature
-            self.identical_tool_streak = 1
+            if self.identical_tool_streak >= self.max_repetitions:
+                return LoopIntervention.STOP
+            if self.identical_tool_streak >= 3:
+                self.temporarily_blocked_tool = name
+                return LoopIntervention.TEMP_BLOCK_TOOL
+            return LoopIntervention.BLOCK_DUPLICATE
 
-        self.rejected_completion_streak = 0
-        return self.identical_tool_streak >= self.max_repetitions
+        self.last_action_signature = signature
+        self.identical_tool_streak = 1
+        self.temporarily_blocked_tool = None
+        return LoopIntervention.ALLOW
+
+    def record_action(self, name: str, arguments: dict[str, object]) -> bool:
+        """Record a tool invocation. Return True if the hard repetition limit is hit."""
+        return self.evaluate_action(name, arguments) is LoopIntervention.STOP
 
     def record_completion_rejection(self) -> bool:
         """Record an unverified completion rejection. Return True if limit hit."""
         self.rejected_completion_streak += 1
         self.last_action_signature = None
         self.identical_tool_streak = 0
-        return self.rejected_completion_streak >= self.max_repetitions
+        self.temporarily_blocked_tool = None
+        return self.rejected_completion_streak >= self.max_completion_rejections
 
     def reset(self) -> None:
-        """Reset all repetition counters."""
+        """Reset all repetition counters and temporary blocks."""
         self.identical_tool_streak = 0
         self.last_action_signature = None
+        self.temporarily_blocked_tool = None
         self.rejected_completion_streak = 0
 
 

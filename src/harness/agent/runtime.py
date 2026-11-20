@@ -8,6 +8,7 @@ import json
 import math
 import time
 from collections.abc import Callable
+from functools import partial
 from pathlib import Path
 from time import monotonic
 
@@ -20,6 +21,7 @@ from harness.agent.protocol import (
 )
 from harness.agent.state import AgentRun, RunStatus
 from harness.agent.verification import (
+    LoopIntervention,
     NoProgressTracker,
     evaluate_verification,
 )
@@ -57,7 +59,7 @@ from harness.tools.policy import (
 DEFAULT_MAX_MODEL_CALLS = 20
 DEFAULT_MAX_STEPS = 20
 DEFAULT_MAX_CONSECUTIVE_INVALID_ACTIONS = 3
-DEFAULT_MAX_NO_PROGRESS_REPETITIONS = 4
+DEFAULT_MAX_NO_PROGRESS_REPETITIONS = 6
 DEFAULT_REQUEST_TIMEOUT = 120.0
 DEFAULT_RUN_TIMEOUT = 300.0
 DEFAULT_MAX_PROMPT_BYTES = 24_576
@@ -598,9 +600,12 @@ def run_agent(
                 )
                 _stop(run, RunStatus.LIMIT_REACHED, stop_reason, emit)
                 return run
+            step_model = _model_with_temp_block(
+                model, no_progress_tracker.temporarily_blocked_tool
+            )
             response = _request_model(
                 run,
-                model,
+                step_model,
                 prompt,
                 request_timeout,
                 deadline,
@@ -699,6 +704,64 @@ def run_agent(
                 stop = _boundary_stop(run, cancelled, deadline, emit)
                 if stop:
                     return stop
+                intervention = no_progress_tracker.evaluate_action(
+                    action.name, action.arguments
+                )
+                if intervention is LoopIntervention.STOP:
+                    run.unresolved_issues.append(
+                        f"Repeated identical tool call without progress: {action.name}"
+                    )
+                    _stop(run, RunStatus.LIMIT_REACHED, "no_progress", emit)
+                    return run
+                if intervention in {
+                    LoopIntervention.BLOCK_DUPLICATE,
+                    LoopIntervention.TEMP_BLOCK_TOOL,
+                }:
+                    invalid_streak = 0
+                    is_temp_block = intervention is LoopIntervention.TEMP_BLOCK_TOOL
+                    err_code = (
+                        "tool_temporarily_blocked"
+                        if is_temp_block
+                        else "duplicate_tool_call"
+                    )
+                    msg = (
+                        f"Tool '{action.name}' is temporarily blocked for the next turn due to "
+                        f"repeated identical calls. Choose a different tool or complete the task; "
+                        f"'{action.name}' will be re-enabled afterward."
+                        if is_temp_block
+                        else (
+                            f"Blocked duplicate call: you already ran '{action.name}' with these "
+                            "exact arguments. Use the previous result, change the arguments, or "
+                            "choose a different tool."
+                        )
+                    )
+                    emit(
+                        RunEventType.TOOL_REQUESTED,
+                        step=run.steps,
+                        data={"tool": action.name, "arguments": action.arguments},
+                    )
+                    blocked_result: dict[str, object] = {
+                        "tool": action.name,
+                        "ok": False,
+                        "error_code": err_code,
+                        "message": msg,
+                    }
+                    emit(
+                        RunEventType.TOOL_RESULT,
+                        step=run.steps,
+                        data={"tool": action.name, "ok": False, "error_code": err_code},
+                    )
+                    history.append(
+                        _exchange(
+                            {
+                                "kind": action.kind,
+                                "name": action.name,
+                                "arguments": action.arguments,
+                            },
+                            blocked_result,
+                        )
+                    )
+                    continue
                 if action.name == "read_memory":
                     result = _execute_read_memory(
                         run,
@@ -775,14 +838,9 @@ def run_agent(
                     "memory_not_found",
                 }:
                     invalid_streak += 1
+                    no_progress_tracker.reset()
                 else:
                     invalid_streak = 0
-                    if no_progress_tracker.record_action(action.name, action.arguments):
-                        run.unresolved_issues.append(
-                            f"Repeated identical tool call without progress: {action.name}"
-                        )
-                        _stop(run, RunStatus.LIMIT_REACHED, "no_progress", emit)
-                        return run
                 if action.name == "edit_file" and result.get("ok"):
                     edited_path = action.arguments.get("path")
                     if (
@@ -1073,6 +1131,34 @@ def _request_approval(
     if _boundary_stop(run, cancelled, deadline, emit):
         return False
     return approved
+
+
+def _model_with_temp_block(model: Model, blocked_tool: str | None) -> Model:
+    """Return a 1-turn model wrapper omitting *blocked_tool* from response_schema."""
+    if blocked_tool is None or not isinstance(model, partial):
+        return model
+    schema = model.keywords.get("response_schema")
+    if not isinstance(schema, dict):
+        return model
+    variants = schema.get("oneOf")
+    if not isinstance(variants, list):
+        return model
+    filtered = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            filtered.append(variant)
+            continue
+        props = variant.get("properties")
+        name_prop = props.get("name") if isinstance(props, dict) else None
+        const_name = name_prop.get("const") if isinstance(name_prop, dict) else None
+        if const_name == blocked_tool:
+            continue
+        filtered.append(variant)
+    if len(filtered) == len(variants) or len(filtered) < 2:
+        return model
+    new_keywords = dict(model.keywords)
+    new_keywords["response_schema"] = {**schema, "oneOf": filtered}
+    return partial(model.func, *model.args, **new_keywords)
 
 
 def _request_model(
