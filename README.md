@@ -1,296 +1,114 @@
 # Efficient Code Agent
 
-**A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
+**A local-first coding agent harness that makes small quantized models reliable on everyday hardware.**
+
+![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776ab?style=flat-square)
+![Local-First](https://img.shields.io/badge/local--first-100%25%20offline-22c55e?style=flat-square)
+![OpenAI-Compatible](https://img.shields.io/badge/servers-llama.cpp%20%7C%20Ollama%20%7C%20LM%20Studio-3b82f6?style=flat-square)
+
+[Features](#what-it-does) · [Benchmarks](#benchmarks) · [Quickstart](#quickstart) · [Architecture](#how-it-works) · [Docs](#documentation)
+
+---
+
+![Efficient Code Agent Web UI](docs/assets/ui-preview.png)
+
+## Why Efficient Code Agent?
+
+Most coding agents assume frontier cloud models with 200K+ context windows. **Efficient Code Agent** is built for the opposite regime—running **7B quantized models (e.g., `Qwen2.5-Coder-7B-Q4_K_M`) inside an 8,192-token context window on a 16 GB laptop**, with zero cloud APIs, zero Docker required, and full inspectability over every tool call, note, and diff.
+
+## What It Does
+
+- **Self-Editing Working Context (`working.md`):** CLM-inspired Markdown notes and lazy `findings/*.md` files that let the model distill discoveries and prune old tool logs deterministically within a strict `TokenBudget`.
+- **Code-Aware Retrieval (Tree-sitter + ripgrep):** Parses Python files into cached symbol maps, ranks exact definitions above comments, and returns bounded line-numbered snippets—cutting prompt tokens by up to **~70%** on multi-file lookups.
+- **Safe, Policy-Gated Coding Loop:** Workspace-confined reads, exact-text edits with SHA-256 preconditions, and allowlisted `pytest` execution under explicit `ASK` / `AUTO` / `DENY` policies.
+- **Graduated Loop Intervention & Verification:** Refuses duplicate tool calls, temporarily masks stuck tools out of `response_schema` for 1 turn so small models recover instead of stalling, and requires post-edit passing tests before accepting completion.
+- **Local Web UI & CLI:** Self-contained dark-mode web workspace (`harness ui`) with grouped project sessions, live Markdown notes/findings, color-coded diffs, and one-click presets for **llama.cpp**, **Ollama**, and **LM Studio**—all backed by SQLite run traces.
+
+## Benchmarks
+
+Evaluated head-to-head on **10 curated [Exercism Python](https://github.com/exercism/python) exercises × 3 trials = 90 runs** (`Qwen2.5-Coder-7B-Instruct-Q4_K_M`, `8192` context window, `240s` timeout, Apple M4 16 GB, shared `pytest` oracles):
+
+| Harness | Resolved | Pass Rate | 95% Wilson CI | Mean Wall (s) | Distinct Tasks | Timeouts |
+| --- | ---: | ---: | --- | ---: | ---: | ---: |
+| **`aider`** (`0.86.2`)\* | 12 / 30 | 40.0% | [24.6%, 57.7%] | 53.0s | 4 / 10 | 3 |
+| **`internal`** (`combined`) | **7 / 30** | **23.3%** | [11.8%, 40.9%] | 190.0s | **5 / 10** | **6** |
+| **`mini-swe-agent`** (`2.4.6`) | 7 / 30 | 23.3% | [11.8%, 40.9%] | 153.1s | 4 / 10 | 14 |
+
+\* *Aider's standard Exercism CLI pre-loads the target solution file into Turn 1 and uses whole-file rewrites (fast on 20–80 line stubs, but not suited for large files under an 8K window). `internal` and `mini-swe-agent` run as autonomous agents from the repo root—matching overall (`7/30`), with `internal` solving **more medium/hard logic tasks (`5/21` vs `2/21`)**, **more distinct tasks (`5` vs `4`)**, and suffering **less than half as many timeouts (`6` vs `14`)**.*
+
+- Full 3-way analysis & per-task token breakdown: **[Exercism 3-Way Comparison](docs/exercism-3way-comparison.md)**
+- Controlled 4-way internal ablations (`baseline`, `retrieval_only`, `clm_only`, `combined`): **[Final Benchmark Report](docs/final-benchmark-report.md)**
 
 ## Quickstart
 
-1. **Install the harness** (Python 3.9+ and `ripgrep` recommended):
+**Prerequisites:** Python 3.9+ and [`ripgrep`](https://github.com/BurntSushi/ripgrep#installation) (`brew install ripgrep` on macOS).
 
+1. **Install:**
    ```sh
    python3 -m venv .venv
    source .venv/bin/activate
    pip install -e .
    ```
 
-2. **Start any local OpenAI-compatible model server** (pick one):
-   - **llama.cpp** (default `http://127.0.0.1:8080`):
-     ```sh
-     llama-server -m /path/to/your-model.gguf --port 8080 -c 8192
-     ```
-   - **Ollama** (`http://127.0.0.1:11434`): `ollama serve`
-   - **LM Studio** (`http://127.0.0.1:1234`): start the Local Server in LM Studio
+2. **Start any local OpenAI-compatible server** (pick one):
+   ```sh
+   # llama.cpp (default :8080)
+   llama-server -m /path/to/your-model.gguf --port 8080 -c 8192
 
-3. **Launch the local web UI**:
+   # or Ollama (:11434)
+   ollama serve
 
+   # or LM Studio (:1234) — start Local Server in the app
+   ```
+
+3. **Launch the Web UI:**
    ```sh
    harness ui
    ```
+   Opens `http://127.0.0.1:8765`. Click the server pill (or Settings) to pick a preset and auto-detect your model—saved automatically to `~/.harness/config.json` (overridable via `HARNESS_BASE_URL` / `HARNESS_MODEL` or `--base-url` / `--model`).
 
-   Open `http://127.0.0.1:8765`, click the server pill or **Settings** to pick a preset (`llama.cpp`, `Ollama`, or `LM Studio`) and auto-detect your model. Settings are saved to `~/.harness/config.json` and can be overridden with `HARNESS_BASE_URL` / `HARNESS_MODEL` or `--base-url` / `--model`.
+### CLI Cheat Sheet
 
-## Why this project?
-
-Most coding agents benefit from large models, long context windows, and generous compute budgets. This project explores a different question:
-
-**Can a small local coding model solve more software engineering tasks when its harness intelligently manages context, retrieves relevant code, and verifies its work?**
-
-The initial hardware target is a **16 GB Apple Silicon MacBook Air**. The goal is not to train a new model or develop a new inference engine; it is to improve **task success under practical memory and compute constraints**.
-
-## Planned capabilities
-
-### 1. Self-editing working context (CLM-inspired)
-
-Rather than relying solely on a growing transcript or automatic summarization, the agent will be able to propose edits to a compact working context:
-
-- Preserve relevant discoveries and decisions.
-- Replace outdated hypotheses with verified findings.
-- Remove no-longer-useful details.
-- Maintain continuity across multiple model calls.
-
-The harness will validate context edits, preserve immutable instructions and task requirements, and enforce a deterministic token-budget fallback. Whether proactive self-editing actually improves results will be tested against a conventional baseline.
-
-### 2. Code-aware repository retrieval
-
-Use **ripgrep** for fast lexical search and **Tree-sitter** for syntax-aware parsing. Planned retrieval features include symbol lookup, lightweight repository maps, and targeted code snippets. The baseline will use bounded ripgrep search first; Tree-sitter enhancements come later, behind the same core repository tool interface.
-
-The aim is to supply the model with **the right code**, not the entire repository. Embedding-based retrieval is intentionally deferred until benchmarks justify the additional memory and complexity.
-
-### 3. Persistent task memory
-
-Store inspectable, agent-editable notes in **Markdown**, initially including a working context and task findings. The model proposes working-note changes through `update_context`; the harness validates and persists them. Selected findings can be retrieved with bounded `read_memory` when needed. A separate `save_memory` tool is deferred.
-
-Full execution history stays separate from the condensed working context, so important evidence can be recovered without including every prior tool result in each prompt.
-
-### 4. Verification-driven agent loop
-
-A Python runtime will coordinate repeated **inspect → plan → edit → test → evaluate** cycles. The agent may request repository searches, file reads and edits, or test commands. The harness executes approved tools and returns their results to the model.
-
-Planned protections include workspace boundaries, command validation, step/time budgets, bounded prompts, and explicit completion criteria. A model's completion proposal is distinct from runtime verification, and independent benchmark tests determine whether a coding task was actually resolved.
-
-### 5. Hardware-aware context budgeting
-
-Constrain prompt sizes and retrieved-code volume for small quantized local models. Track task success alongside resource costs such as tokens, runtime, and peak memory. Inference will be provided by **llama.cpp**, rather than a custom inference engine.
-
-## Planned architecture
-
-```text
-CLI
- |
- v
-Python Agent Runtime
- |-- Context Manager (CLM-inspired edits + token limits)
- |-- Repository Retrieval (ripgrep + Tree-sitter)
- |-- Coding Tools (search, read, edit, test)
- |-- Persistent Memory (Markdown)
- |-- Run Tracing / Benchmarks (SQLite)
- |
- v
-llama.cpp local HTTP server
- |
- v
-Quantized coding LLM (GGUF)
+```sh
+harness ui                                                # Local web workspace
+harness session --repo . --retrieval-mode code_aware      # Multi-turn CLI session with working.md
+harness run "Fix failing tests" --repo . --coding         # Single coding task (ASK approvals)
+harness chat "Explain Python decorators concisely."       # Direct one-shot local chat
 ```
 
-The **Python harness calls the local model** through llama.cpp's HTTP interface. Model outputs may request tools or context edits; Python validates and performs those operations before the next inference call.
+See **[CLI Reference](docs/cli-reference.md)** for all flags, policies, and exit codes.
 
-## Technology stack
+## How It Works
 
-| Technology | Role |
+```mermaid
+flowchart LR
+    UI["Web UI / CLI<br/>(harness ui · session · run)"] --> RT["Agent Runtime<br/>(JSON-Schema Loop + Graduated Blocking)"]
+    RT --> CTX["Context Manager<br/>(working.md + TokenBudget)"]
+    RT --> RET["Code-Aware Retrieval<br/>(ripgrep + Tree-sitter)"]
+    RT --> TOOLS["Policy-Gated Tools<br/>(read · edit · pytest)"]
+    RT --> LLM["Local Model Server<br/>(llama.cpp · Ollama · LM Studio)"]
+    RT --> DB["SQLite Traces & Sessions"]
+```
+
+## Documentation
+
+| Document | Contents |
 | --- | --- |
-| Python | CLI, agent runtime, tool execution, context management |
-| llama.cpp + GGUF | Local inference for quantized coding models |
-| Tree-sitter | Syntax-aware code parsing and symbol extraction |
-| ripgrep (`rg`) | Fast repository and text search |
-| Markdown | Human-readable working context and persistent task notes |
-| SQLite | Supporting storage for run history, tracing, and benchmark measurements |
-| pytest | Automated tests and evaluation helpers |
+| [Implemented Code Map](docs/code-map.md) | Package modules, call flows, contracts, and test coverage |
+| [CLI Reference](docs/cli-reference.md) | Commands, flags, approval policies, and exit codes |
+| [Exercism 3-Way Comparison](docs/exercism-3way-comparison.md) | 90-run comparison vs. `mini-SWE-agent` and `Aider` |
+| [Final Benchmark Report](docs/final-benchmark-report.md) | 4-way internal ablations, memory measurements, and protocol |
+| [Architecture](docs/architecture.md) | System boundaries, design principles, and tradeoffs |
+| [Development Roadmap](docs/development-roadmap.md) | 7-phase implementation roadmap and acceptance criteria |
 
-**Interface:** CLI first, potentially CLI only. FastAPI and React are optional future additions, not part of the initial scope.
-
-## Local development
-
-Install ripgrep (`rg`) before using the repository `list_files` tool. On macOS,
-install it with `brew install ripgrep`; other platforms can use their package
-manager or the [ripgrep installation guide](https://github.com/BurntSushi/ripgrep#installation).
-
-From the repository root, create and activate a local virtual environment:
+## Development
 
 ```sh
-python3 -m venv .venv
-source .venv/bin/activate
-```
-
-Install the project with its development tools:
-
-```sh
-python -m pip install --upgrade pip
-python -m pip install -e '.[dev]'
-```
-
-Run the checks:
-
-```sh
+pip install -e '.[dev]'
 python -m pytest
 ruff check src tests
 ruff format --check src tests
 ```
-
-After installing, run `harness` to open interactive mode. Start `llama-server`
-separately before sending a prompt.
-
-Run `deactivate` to leave the environment. The `.venv/` directory is ignored by Git.
-
-## Evaluation strategy
-
-The project will compare the **same local model on the same coding tasks** using:
-
-1. A minimal baseline harness.
-2. A harness with code-aware retrieval.
-3. A harness with proactive context editing.
-4. A combined optimized harness.
-
-Primary metric: **coding-task success rate**, evaluated with tests or task-specific checks.
-
-Secondary metrics: token usage, agent steps, elapsed time, and peak memory. Controlled comparisons and ablation tests will help identify which techniques provide measurable benefits. We also plan an external comparison with **mini-SWE-agent** on selected tasks, documenting differences in tools and policies. Locally evaluated tasks will not be presented as official SWE-bench scores.
-
-**No accuracy or efficiency improvements are claimed until benchmarks have been run.**
-
-## Development roadmap
-
-Development follows seven incremental phases. Each phase should deliver working behavior, tests, and an explicit acceptance criterion:
-
-1. **Local model foundation:** Connect Python to a quantized coding model through llama.cpp.
-2. **Read-only agent:** Implement a bounded autonomous loop with safe file inspection and prompt budgeting.
-3. **Coding and verification:** Add ripgrep search, file editing, and permitted test execution.
-4. **Baseline evaluation:** Record repeatable task outcomes, SQLite traces, token usage, timing, and memory measurements.
-5. **CLM-inspired context:** Add model-initiated working-note edits and context strategies.
-6. **Code-aware retrieval:** Add Tree-sitter symbol indexing, ranking, and compact repository maps.
-7. **Comparative benchmarking:** Evaluate baseline, retrieval-only, context-only, and combined variants, plus an external harness comparison.
-
-See [Development Roadmap](docs/development-roadmap.md) for implementation tasks, tests, and completion criteria. The roadmap is the authoritative source for implementation order.
-
-For a beginner-friendly guide to the implemented modules, request flow, APIs,
-and tests, see the [Implemented Code Map](docs/code-map.md).
-
-## Design documentation
-
-- [Implemented Code Map](docs/code-map.md) — current Python modules, chat flow, and tests.
-- [Architecture](docs/architecture.md) — system components, boundaries, and technology choices.
-- [Agent Runtime](docs/agent-runtime.md) — agent loop, actions, safeguards, and verification.
-- [Context and Memory](docs/context-and-memory.md) — editable working notes, prompt budgets, and memory strategies.
-- [Repository Retrieval](docs/repository-retrieval.md) — lexical search, Tree-sitter, and bounded code snippets.
-- [Benchmarking](docs/benchmarking.md) — task selection, fair comparisons, and evaluation metrics.
-- [Development Roadmap](docs/development-roadmap.md) — phased implementation plan and acceptance criteria.
-- [Local Model Setup](docs/local-model.md) — tested llama.cpp model, launch configuration, and HTTP smoke test.
-
-## Local model CLI
-
-Start `llama-server` separately with the desired GGUF model. Then run `harness`
-to enter interactive mode. Each prompt is sent as its own request without
-conversation history; enter `/exit` to quit. Blank lines are ignored. The CLI
-prints each response and any token usage reported by the server.
-
-```bash
-harness
-You > Say hello in one sentence.
-```
-
-The `python -m harness` command opens the same interactive loop. For one prompt
-without entering interactive mode, use:
-
-```bash
-python -m harness chat "Say hello in one sentence."
-# Optional settings: --base-url http://127.0.0.1:9931 --model MODEL.gguf
-#                    --timeout 120 --max-tokens 256
-```
-
-The `harness chat PROMPT` command prints the response to stdout and token usage
-to stderr when the server reports it. See [Local Model Setup](docs/local-model.md)
-for the tested server configuration and details.
-
-## Read-only repository task CLI
-
-Use `harness run TASK` to let the model inspect a repository through the
-bounded `list_files`, `search_code`, and `read_file` tools. The repository defaults to the
-current directory. The agent cannot edit files or run commands. A completed
-status means the model proposed an answer; it is unverified and does not prove
-that the answer is correct.
-
-Python callers may invoke `harness.tools.execute_tool(..., allow_edits=True)` to
-authorize one exact `edit_file` request directly. The CLI coding profile is
-opt-in with `--coding`; it enables exact-text edits and a fixed pytest runner
-under separate edit and test policies. The default is ASK for both. Each ASK
-operation displays its exact prepared edit or pytest command on stderr and
-requires `y` or `yes` on an interactive stdin. `--auto-approve` changes both
-policies to AUTO and is an explicit operator grant. Read-only tools remain
-automatic.
-
-```bash
-harness run "Explain how greeting.py combines its prefix and name" --repo ./tests/fixtures/read_only_repo
-python -m harness run "Summarize this project" --repo . \
-  --base-url http://127.0.0.1:9931 --model MODEL.gguf --max-tokens 256 \
-  --timeout 120 --run-timeout 300 --max-model-calls 20 --max-steps 20
-
-harness run "Fix and test the parser" --repo ./example-repo --coding
-harness run "Fix and test the parser" --repo ./example-repo --coding \
-  --auto-approve --test-target tests/test_parser.py --test-timeout 60
-```
-
-Repeat `--test-target` to replace the default `.` target with a fixed list of
-existing workspace-relative files or directories. The model can select only
-those configured targets. Tests run as the current Python executable with
-`-m pytest -q -- TARGET`; arbitrary commands, pytest flags, and node selectors
-are not accepted. Test output is bounded. Repository tests can execute code
-with the current user's permissions: this policy is an approval boundary, not
-an OS sandbox. Normal pytest configuration, `conftest.py`, and plugins from the
-trusted repository and environment are loaded. A passing test observation
-does not verify a task, and model completion remains unverified.
-
-Install `rg` as described above and start a compatible llama.cpp server before
-running a task. The run request timeout and overall run deadline are in
-seconds. Prompt and model response limits are measured in bytes, not tokens.
-Ctrl+C requests cooperative cancellation at runtime boundaries; it does not
-forcibly interrupt an in-flight model request.
-
-The `run` command requests schema-constrained JSON actions from llama.cpp. Use
-a server build that supports schema-based `response_format`; see the
-[llama.cpp server API documentation](https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md#post-v1chatcompletions-openai-compatible-chat-completions-api).
-The run request also sends repository action policy in a system message and
-keeps the combined system and user prompt content within the runtime's 24 KiB
-byte budget. The ordinary `chat` command does not send a system message or
-request an action schema.
-
-For path-only questions, the agent can use `list_files` without reading file
-contents. Its `pattern` is a Python `Path.match` glob, not a regular expression:
-`*.py` and `settings.py` are examples. `settings.py|greeting.py` does not mean
-“either filename”; request each name with a separate call. If a filtered list
-is empty, try a simpler pattern or an unfiltered listing before concluding
-that a path is absent.
-
-For text discovery, `search_code` accepts a regular-expression `query` (up to
-4096 UTF-8 bytes), an optional filename `glob` using Python `Path.match` syntax,
-and an optional `max_results` from 1 to 200 (default 50). Escape punctuation
-when searching for a literal string. Results contain sorted workspace-relative
-paths, 1-based line numbers, and previews; files and output are bounded, and a
-truncation flag marks incomplete results. A successful empty result means no
-match was found in the bounded visible workspace search. Use `read_file` to
-inspect matching source before answering questions about file contents.
-
-The final answer is the only content written to stdout. Run status, stop reason,
-model-call and step counts, and the unverified-completion label go to stderr.
-Exit codes are 0 for a model completion, 1 for a runtime failure or reached
-limit, 2 for invalid invocation, and 130 for cancellation. A local live smoke
-check can be run after starting the model server with
-`HARNESS_LIVE_SMOKE=1 .venv/bin/python -m pytest tests/test_cli.py -k live_run_smoke`.
-
-The initial release will focus on a single local machine and repository, not distributed infrastructure or cloud deployment.
-
-## Project principles
-
-- **Measure task success first.** Speed matters, but correct solutions matter more.
-- **Keep the system inspectable.** Context edits, tool calls, and outcomes should be explainable and reproducible.
-- **Avoid unnecessary services.** Start with a local CLI, files, and SQLite.
-- **Build a baseline before optimizing.** Every added technique should justify its complexity.
 
 ## License
 
