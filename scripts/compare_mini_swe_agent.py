@@ -25,6 +25,7 @@ from harness.evaluation import (
     load_suite_dir,
 )
 from harness.llama_client import chat
+from harness.storage import SqliteRunRecorder
 
 
 def wilson_ci(
@@ -326,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
 
     checkpoints_dir = args.artifacts_dir / "checkpoints"
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    recorder = SqliteRunRecorder(args.db_path) if args.db_path is not None else None
     records: list[dict[str, Any]] = []
 
     for trial in range(1, args.trials + 1):
@@ -346,12 +348,13 @@ def main(argv: list[str] | None = None) -> int:
 
                 trial_work = args.work_root / f"trial_{trial}" / harness_name
                 trial_art = args.artifacts_dir / f"trial_{trial}" / harness_name
-                if harness_name == "internal":
+                if harness_name in {"internal", "internal_no_notes"}:
                     res = evaluate_task(
                         manifest,
                         work_root=trial_work,
                         model=model_fn,
                         artifacts_root=trial_art,
+                        recorder=recorder,
                         max_model_calls=protocol.max_model_calls,
                         max_steps=protocol.max_steps,
                         max_consecutive_invalid_actions=protocol.max_consecutive_invalid_actions,
@@ -361,7 +364,11 @@ def main(argv: list[str] | None = None) -> int:
                         setup_timeout=protocol.setup_timeout,
                         cleanup_workspaces=protocol.cleanup_workspaces,
                         experiment_config=config,
-                        context_strategy="editable_context",
+                        context_strategy=(
+                            "editable_context"
+                            if harness_name == "internal"
+                            else "bounded_history"
+                        ),
                         retrieval_backend="code_aware",
                         token_budget=TokenBudget(
                             context_window=protocol.context_window,

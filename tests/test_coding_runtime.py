@@ -561,3 +561,131 @@ def test_decoded_test_streams_keep_utf8_expansion_bounded() -> None:
     assert len(result.data["stdout"].encode("utf-8")) <= 16 * 1024
     assert result.truncated
     assert len(json.dumps(result.to_dict(), ensure_ascii=True).encode()) <= 32 * 1024
+
+
+def test_edit_file_auto_fills_sha256_and_rejects_unread_file(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("x = 1\n", encoding="utf-8")
+    (tmp_path / "test_app.py").write_text(
+        "from app import x\ndef test_x(): assert x == 3\n", encoding="utf-8"
+    )
+    policy = ToolPolicy(
+        edit_file=ToolMode.AUTO,
+        run_tests=ToolMode.AUTO,
+        test_targets=("test_app.py",),
+        auto_test_after_edit=False,
+    )
+    actions = iter(
+        [
+            # Attempt edit without reading first -> rejected
+            _tool(
+                "edit_file",
+                {"path": "app.py", "old_text": "x = 1", "new_text": "x = 2"},
+            ),
+            # Read file -> harness records sha256
+            _tool("read_file", {"path": "app.py"}),
+            # Edit without expected_sha256 -> succeeds via auto-fill
+            _tool(
+                "edit_file",
+                {"path": "app.py", "old_text": "x = 1", "new_text": "x = 2"},
+            ),
+            # Second chained edit without expected_sha256 -> succeeds via updated sha256
+            _tool(
+                "edit_file",
+                {"path": "app.py", "old_text": "x = 2", "new_text": "x = 3"},
+            ),
+            _tool("run_tests", {"preset": "pytest", "target": "test_app.py"}),
+            {"kind": "complete", "summary": "Updated x to 3"},
+        ]
+    )
+    run = run_agent(
+        "Update x",
+        tmp_path,
+        model=lambda _p, *, timeout: _response(next(actions)),
+        policy=policy,
+    )
+    assert run.status is RunStatus.COMPLETED
+    assert run.verification_quality.value == "verified"
+    assert (tmp_path / "app.py").read_text(encoding="utf-8") == "x = 3\n"
+
+
+def test_auto_test_after_edit_verifies_without_extra_run_tests_turn(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "calc.py").write_text("def val(): return 1\n", encoding="utf-8")
+    (tmp_path / "test_calc.py").write_text(
+        "from calc import val\ndef test_val(): assert val() == 2\n",
+        encoding="utf-8",
+    )
+    policy = ToolPolicy(
+        edit_file=ToolMode.AUTO,
+        run_tests=ToolMode.AUTO,
+        test_targets=("test_calc.py",),
+        auto_test_after_edit=True,
+    )
+    actions = iter(
+        [
+            _tool("read_file", {"path": "calc.py"}),
+            _tool(
+                "edit_file",
+                {"path": "calc.py", "old_text": "return 1", "new_text": "return 2"},
+            ),
+            # Complete immediately without an explicit run_tests step
+            {"kind": "complete", "summary": "Fixed val()"},
+        ]
+    )
+    run = run_agent(
+        "Fix val",
+        tmp_path,
+        model=lambda _p, *, timeout: _response(next(actions)),
+        policy=policy,
+    )
+    assert run.status is RunStatus.COMPLETED
+    assert run.verification_quality.value == "verified"
+    assert len(run.test_invocations) == 1
+    assert run.test_invocations[0]["exit_code"] == 0
+
+
+def test_edit_file_line_range_with_auto_sha_and_auto_test(tmp_path: Path) -> None:
+    (tmp_path / "app.py").write_text("def val():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "test_app.py").write_text(
+        "from app import val\n\ndef test_val():\n    assert val() == 2\n",
+        encoding="utf-8",
+    )
+    actions = iter(
+        [
+            {"kind": "tool", "name": "read_file", "arguments": {"path": "app.py"}},
+            {
+                "kind": "tool",
+                "name": "edit_file",
+                "arguments": {
+                    "path": "app.py",
+                    "start_line": 1,
+                    "end_line": 2,
+                    "new_text": "def val():\n    return 2",
+                },
+            },
+            {"kind": "complete", "summary": "Fixed val() using line range."},
+        ]
+    )
+    policy = ToolPolicy(
+        edit_file=ToolMode.AUTO,
+        run_tests=ToolMode.AUTO,
+        test_targets=("test_app.py",),
+        auto_test_after_edit=True,
+    )
+    run = run_agent(
+        "Fix app.py",
+        tmp_path,
+        model=lambda prompt, **kwargs: ChatResponse(
+            text=json.dumps(next(actions)),
+            prompt_tokens=10,
+            completion_tokens=10,
+            total_tokens=20,
+        ),
+        policy=policy,
+    )
+    assert run.status is RunStatus.COMPLETED
+    assert run.verification_quality.value == "verified"
+    assert (tmp_path / "app.py").read_text(
+        encoding="utf-8"
+    ) == "def val():\n    return 2\n"

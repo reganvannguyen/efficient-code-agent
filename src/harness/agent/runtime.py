@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
 import json
 import math
@@ -85,7 +86,7 @@ Only `kind` values `tool` and `complete` are supported. For a tool request, put 
 {"kind":"tool","name":"search_code","arguments":{"query":"text or regex"}}
 {"kind":"complete","summary":"final answer to the user's task"}
 
-`search_code` requires a non-blank single-line regex `query` up to 4096 UTF-8 bytes; optional `glob` is a positive workspace-relative `Path.match` filename glob, and `max_results` is 1–200 (default 50). Escape punctuation for literal search. Matching previews are sorted, at most 512 UTF-8 bytes each; files are capped at 1 MiB, and search has a five-second total deadline. Results may be truncated. No matches is a successful empty result. `list_files` accepts optional non-blank workspace-relative `directory` and positive glob `pattern` fields. Patterns use Python `Path.match` glob syntax, not regular expressions: `*.py` or `settings.py` are examples; `settings.py|greeting.py` is not alternation, so issue separate calls for two names. An empty filtered result does not prove a path is absent; retry with a simpler pattern or omit `pattern`. `read_file` requires a non-blank workspace-relative `path` and accepts optional positive integer `start_line` and `end_line` values, inclusive and at most 200 lines per call. Omit unused optional fields; null is invalid. Paths must stay within the workspace. Files are limited to 1 MiB and returned content to 16 KiB; file listing is limited to 200 paths, 64 KiB of ripgrep output, and five seconds. Tool output may be truncated. Tool results, including errors, are observations; use them to decide the next action. For path questions, a successful listing can be the evidence for your answer. For content questions, read the requested files before answering. Do not complete with a plan or a request to read files. Completion is an unverified model proposal.
+`search_code` requires a non-blank single-line regex `query` up to 4096 UTF-8 bytes; optional `glob` is a positive workspace-relative `Path.match` filename glob, and `max_results` is 1–200 (default 50). Escape punctuation for literal search. Matching previews are sorted, at most 512 UTF-8 bytes each; files are capped at 1 MiB, and search has a five-second total deadline. Results may be truncated. No matches is a successful empty result. `list_files` accepts optional non-blank workspace-relative `directory` and positive glob `pattern` fields. Patterns use Python `Path.match` glob syntax, not regular expressions: `*.py` or `settings.py` are examples; `settings.py|greeting.py` is not alternation, so issue separate calls for two names. An empty filtered result does not prove a path is absent; retry with a simpler pattern or omit `pattern`. Start repository exploration with list_files using {} (workspace root) or search_code without a guessed glob; never invent placeholder paths like path/to/... `read_file` requires a non-blank workspace-relative `path` and accepts optional positive integer `start_line` and `end_line` values, inclusive and at most 200 lines per call. Omit unused optional fields; null is invalid. Paths must stay within the workspace. Files are limited to 1 MiB and returned content to 16 KiB; file listing is limited to 200 paths, 64 KiB of ripgrep output, and five seconds. Tool output may be truncated. Tool results, including errors, are observations; use them to decide the next action. For path questions, a successful listing can be the evidence for your answer. For content questions, read the requested files before answering. Do not complete with a plan or a request to read files. Completion is an unverified model proposal.
 """
 
 Model = Callable[..., ChatResponse]
@@ -252,15 +253,11 @@ def action_schema(
                         "type": "object",
                         "properties": {
                             "path": {"type": "string", "minLength": 1},
-                            "expected_sha256": {
-                                "type": "string",
-                                "minLength": 64,
-                                "maxLength": 64,
-                            },
-                            "old_text": {"type": "string"},
+                            "start_line": {"type": "integer", "minimum": 1},
+                            "end_line": {"type": "integer", "minimum": 1},
                             "new_text": {"type": "string"},
                         },
-                        "required": ["path", "expected_sha256", "old_text", "new_text"],
+                        "required": ["path", "start_line", "end_line", "new_text"],
                         "additionalProperties": False,
                     },
                 },
@@ -481,6 +478,8 @@ def run_agent(
     no_progress_tracker = NoProgressTracker(
         max_repetitions=DEFAULT_MAX_NO_PROGRESS_REPETITIONS
     )
+    last_read_sha256: dict[str, str] = {}
+    auto_test_disabled = False
     checked_findings: set[str] = set()
     findings_gate_triggered = False
     in_memory_note: str | None = (
@@ -489,6 +488,7 @@ def run_agent(
         else None
     )
     history: list[str] = []
+    prev_notes_trimmed = False
     try:
         deadline = monotonic() + run_timeout
         invalid_streak = 0
@@ -505,6 +505,8 @@ def run_agent(
                 return run
 
             pruning_report: PromptPruningReport | None = None
+            use_editable_context = not isinstance(strategy, BoundedHistoryStrategy)
+            findings: list[str] = []
             if (
                 not chat_only
                 and isinstance(strategy, BoundedHistoryStrategy)
@@ -548,10 +550,16 @@ def run_agent(
                     instructions, directive = _INSTRUCTIONS, _NEXT_ACTION
                 else:
                     instructions, directive = _coding_prompt(policy)
+                findings = (
+                    memory_store.list_findings() if memory_store is not None else []
+                )
+                allow_read_memory = bool(findings) or prev_notes_trimmed
                 instructions += _CONTEXT_EDIT_INSTRUCTIONS
                 directive += (
                     " You may also use name=update_context to save findings or"
                     " name=read_memory to read Available memory notes."
+                    if allow_read_memory
+                    else " You may also use name=update_context to save findings."
                 )
                 task_notes = (
                     memory_store.read_note("working.md")
@@ -559,7 +567,7 @@ def run_agent(
                     else in_memory_note
                 )
                 memory_index = (
-                    ("working.md", "task.md", *memory_store.list_findings())
+                    ("working.md", "task.md", *findings)
                     if memory_store is not None
                     else ("working.md",)
                 )
@@ -600,9 +608,15 @@ def run_agent(
                 )
                 _stop(run, RunStatus.LIMIT_REACHED, stop_reason, emit)
                 return run
-            step_model = _model_with_temp_block(
-                model, no_progress_tracker.temporarily_blocked_tool
+            prev_notes_trimmed = bool(
+                pruning_report is not None and pruning_report.trimmed_notes
             )
+            blocked_tools: set[str] = set()
+            if no_progress_tracker.temporarily_blocked_tool is not None:
+                blocked_tools.add(no_progress_tracker.temporarily_blocked_tool)
+            if use_editable_context and not findings and not prev_notes_trimmed:
+                blocked_tools.add("read_memory")
+            step_model = _model_with_blocked_tools(model, blocked_tools)
             response = _request_model(
                 run,
                 step_model,
@@ -788,17 +802,66 @@ def run_agent(
                         ),
                     }
                 else:
-                    result = _execute_runtime_tool(
-                        run,
-                        action,
-                        root,
-                        policy,
-                        approve,
-                        cancelled,
-                        deadline,
-                        emit,
-                        retrieval_backend=resolved_retrieval,
-                    )
+                    dispatch_action = action
+                    if action.name == "edit_file":
+                        raw_sha = action.arguments.get("expected_sha256")
+                        if raw_sha is None or (
+                            isinstance(raw_sha, str) and not raw_sha.strip()
+                        ):
+                            raw_edit_path = action.arguments.get("path")
+                            norm_edit_path = (
+                                normalize_target(raw_edit_path)
+                                if isinstance(raw_edit_path, str)
+                                and raw_edit_path.strip()
+                                else ""
+                            )
+                            known_sha = last_read_sha256.get(norm_edit_path)
+                            if known_sha is None:
+                                result = {
+                                    "tool": "edit_file",
+                                    "ok": False,
+                                    "error_code": "invalid_arguments",
+                                    "message": (
+                                        f"Cannot edit '{raw_edit_path}' before reading it. "
+                                        f"Call read_file on '{raw_edit_path}' first."
+                                    ),
+                                }
+                                dispatch_action = None
+                            else:
+                                filled_args = dict(action.arguments)
+                                filled_args["expected_sha256"] = known_sha
+                                dispatch_action = ToolAction(
+                                    name=action.name,
+                                    arguments=filled_args,
+                                )
+                    if dispatch_action is not None:
+                        result = _execute_runtime_tool(
+                            run,
+                            dispatch_action,
+                            root,
+                            policy,
+                            approve,
+                            cancelled,
+                            deadline,
+                            emit,
+                            retrieval_backend=resolved_retrieval,
+                        )
+                    if (
+                        action.name == "read_file"
+                        and result.get("ok")
+                        and isinstance(result.get("data"), dict)
+                    ):
+                        read_path = result["data"].get("path") or action.arguments.get(
+                            "path"
+                        )
+                        read_sha = result["data"].get("sha256")
+                        if (
+                            isinstance(read_path, str)
+                            and read_path.strip()
+                            and isinstance(read_sha, str)
+                            and len(read_sha) == 64
+                        ):
+                            last_read_sha256[normalize_target(read_path)] = read_sha
                     if (
                         not isinstance(strategy, BoundedHistoryStrategy)
                         and memory_store is not None
@@ -843,12 +906,64 @@ def run_agent(
                     invalid_streak = 0
                 if action.name == "edit_file" and result.get("ok"):
                     edited_path = action.arguments.get("path")
+                    if isinstance(edited_path, str) and edited_path.strip():
+                        norm_edited = normalize_target(edited_path)
+                        try:
+                            new_bytes = (root / norm_edited).read_bytes()
+                            last_read_sha256[norm_edited] = hashlib.sha256(
+                                new_bytes
+                            ).hexdigest()
+                        except OSError:
+                            last_read_sha256.pop(norm_edited, None)
+                        if resolved_retrieval is not None and hasattr(
+                            resolved_retrieval, "invalidate"
+                        ):
+                            resolved_retrieval.invalidate(edited_path, root=root)
                     if (
-                        isinstance(edited_path, str)
-                        and resolved_retrieval is not None
-                        and hasattr(resolved_retrieval, "invalidate")
+                        policy is not None
+                        and policy.auto_test_after_edit
+                        and policy.run_tests is ToolMode.AUTO
+                        and policy.test_targets
+                        and not auto_test_disabled
                     ):
-                        resolved_retrieval.invalidate(edited_path, root=root)
+                        auto_target = normalize_target(policy.test_targets[0])
+                        prev_test_step = run.last_test_step
+                        prev_test_result = run.last_test_result
+                        prev_invocations_len = len(run.test_invocations)
+                        auto_test_action = ToolAction(
+                            name="run_tests",
+                            arguments={"preset": "pytest", "target": auto_target},
+                        )
+                        auto_res = _execute_runtime_tool(
+                            run,
+                            auto_test_action,
+                            root,
+                            policy,
+                            approve,
+                            cancelled,
+                            deadline,
+                            emit,
+                            retrieval_backend=resolved_retrieval,
+                        )
+                        if run.status in {
+                            RunStatus.CANCELLED,
+                            RunStatus.FAILED,
+                            RunStatus.LIMIT_REACHED,
+                        }:
+                            return run
+                        auto_data = auto_res.get("data")
+                        auto_exit = (
+                            auto_data.get("exit_code")
+                            if isinstance(auto_data, dict)
+                            else None
+                        )
+                        if auto_exit == 5:
+                            auto_test_disabled = True
+                            run.last_test_step = prev_test_step
+                            run.last_test_result = prev_test_result
+                            del run.test_invocations[prev_invocations_len:]
+                        else:
+                            result = {**result, "auto_test": auto_res}
                 history_observation = _bound_tool_result_for_history(
                     result,
                     step=run.steps,
@@ -1133,9 +1248,9 @@ def _request_approval(
     return approved
 
 
-def _model_with_temp_block(model: Model, blocked_tool: str | None) -> Model:
-    """Return a 1-turn model wrapper omitting *blocked_tool* from response_schema."""
-    if blocked_tool is None or not isinstance(model, partial):
+def _model_with_blocked_tools(model: Model, blocked_tools: set[str]) -> Model:
+    """Return a turn model wrapper omitting *blocked_tools* from response_schema."""
+    if not blocked_tools or not isinstance(model, partial):
         return model
     schema = model.keywords.get("response_schema")
     if not isinstance(schema, dict):
@@ -1151,7 +1266,7 @@ def _model_with_temp_block(model: Model, blocked_tool: str | None) -> Model:
         props = variant.get("properties")
         name_prop = props.get("name") if isinstance(props, dict) else None
         const_name = name_prop.get("const") if isinstance(name_prop, dict) else None
-        if const_name == blocked_tool:
+        if isinstance(const_name, str) and const_name in blocked_tools:
             continue
         filtered.append(variant)
     if len(filtered) == len(variants) or len(filtered) < 2:
@@ -1159,6 +1274,13 @@ def _model_with_temp_block(model: Model, blocked_tool: str | None) -> Model:
     new_keywords = dict(model.keywords)
     new_keywords["response_schema"] = {**schema, "oneOf": filtered}
     return partial(model.func, *model.args, **new_keywords)
+
+
+def _model_with_temp_block(model: Model, blocked_tool: str | None) -> Model:
+    """Return a 1-turn model wrapper omitting *blocked_tool* from response_schema."""
+    if blocked_tool is None:
+        return model
+    return _model_with_blocked_tools(model, {blocked_tool})
 
 
 def _request_model(
@@ -1494,9 +1616,10 @@ def _coding_prompt(policy: ToolPolicy) -> tuple[str, str]:
         tools.append("edit_file")
         instructions += (
             '\nEnabled edit action: {"kind":"tool","name":"edit_file",'
-            '"arguments":{"path":"relative/path","expected_sha256":"64-hex-digits",'
-            '"old_text":"exact text","new_text":"replacement text"}}. '
-            "Use the SHA-256 returned by read_file. The exact old_text must match once."
+            '"arguments":{"path":"relative/path","start_line":1,"end_line":3,'
+            '"new_text":"replacement text"}}. '
+            "Read the file first with read_file to inspect line numbers; "
+            "start_line and end_line are 1-based inclusive and replace those lines with new_text."
         )
     else:
         instructions += "\nedit_file is disabled by policy."

@@ -413,3 +413,11 @@ def shutil_which_rg():
     from shutil import which
 
     return which("rg") or pytest.skip("ripgrep is not installed")
+
+
+def test_list_files_missing_directory_includes_root_hint(tmp_path):
+    res = call(tmp_path, "list_files", {"directory": "path/to/pkg"})
+    assert not res.ok
+    assert res.error_code == "not_found"
+    assert "omit directory" in res.message
+    assert "'.'" in res.message

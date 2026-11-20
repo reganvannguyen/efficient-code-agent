@@ -98,7 +98,7 @@ flowchart LR
 | [`src/harness/agent/state.py`](../src/harness/agent/state.py) | Defines run lifecycle statuses including approval wait, mutable `AgentRun` with unique UUID4 `run_id`, `events`, `benchmark_outcome`, token counters (`total_prompt_tokens`, `total_completion_tokens`, `total_tokens`), wall-clock timestamps and duration, counters and stop reason, confirmed `changed_paths`, latest bounded `last_tool_result` and `last_test_result`, `last_write_state`, verification quality, candidate diff, test invocations, unresolved issues, edit/test step indices, and permitted state transitions. |
 | [`src/harness/agent/verification.py`](../src/harness/agent/verification.py) | Defines `VerificationQuality` (`verified`, `partially_verified`, `unverified`), `LoopIntervention` (`allow`, `block_duplicate`, `temp_block_tool`, `stop`), `NoProgressTracker` (graduated duplicate-call blocking, temporary 1-turn tool blocking, and safety-cap stop on repeated tool calls or rejected completions), and `evaluate_verification` to enforce post-edit passing test requirements. |
 | [`src/harness/agent/protocol.py`](../src/harness/agent/protocol.py) | Defines frozen tool, `context_edit` (normalized from `update_context`), completion, and invalid action dataclasses and strictly parses a single JSON action envelope, normalizing deeply nested JSON as invalid. |
-| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines read-only and coding system prompts, read-only schema and per-run `action_schema(policy, include_context_edit=...)`; pins profile-specific tool instructions; delegates prompt construction to a swappable `ContextStrategy` (default `BoundedHistoryStrategy`); validates and executes `context_edit` (`update_context`) and bounded `read_memory` actions against `WorkingMemoryStore` or an in-memory buffer; validates model/runtime limits and `on_event` callback, tracks approval wait transitions, delegates policy decisions to the dispatcher, checks post-edit passing tests and no-progress repetitions, records candidate diffs, retries one typed transport failure, streams structured run events, notifies optional `RunRecorder` on lifecycle transitions, accumulates token metrics, and runs within independent budgets. |
+| [`src/harness/agent/runtime.py`](../src/harness/agent/runtime.py) | Defines read-only and coding system prompts, read-only schema and per-run `action_schema(policy, include_context_edit=...)` (line-range `edit_file` schema with auto-filled `expected_sha256` from the last `read_file` and optional post-edit `auto_test_after_edit`); pins profile-specific tool instructions (including root `list_files` lookup guidance); delegates prompt construction to a swappable `ContextStrategy` (default `BoundedHistoryStrategy`); dynamically gates `read_memory` out of `response_schema` when `findings/` is empty and notes were not trimmed; validates and executes `context_edit` (`update_context`) and bounded `read_memory` actions against `WorkingMemoryStore` or an in-memory buffer; validates model/runtime limits and `on_event` callback, tracks approval wait transitions, delegates policy decisions to the dispatcher, checks post-edit passing tests and no-progress repetitions, records candidate diffs, retries one typed transport failure, streams structured run events, notifies optional `RunRecorder` on lifecycle transitions, accumulates token metrics, and runs within independent budgets. |
 | [`src/harness/context/__init__.py`](../src/harness/context/__init__.py) | Exports the context-strategy, token-budgeting, and working-memory subsystem: `ContextInput`, `ContextStrategy`, `BoundedHistoryStrategy`, `EditableContextStrategy`, `TokenBudget`, `TokenCounter`, `LlamaTokenCounter`, `PromptPruningReport`, `estimate_tokens`, `resolve_token_counter`, `WorkingMemoryStore`, `MemoryStorageError`, `DEFAULT_READ_MEMORY_MAX_BYTES`, `resolve_context_strategy`, and `validate_scope_id`. |
 | [`src/harness/context/budgeting.py`](../src/harness/context/budgeting.py) | Implements `TokenBudget` (`context_window` minus output reserve, overhead, and safety margin), `TokenCounter` / `LlamaTokenCounter` (with deterministic `estimate_tokens()` fallback), `PromptPruningReport`, `within_budget()`, and `trim_notes_deterministically()`. |
 | [`src/harness/context/memory.py`](../src/harness/context/memory.py) | Implements task- and session-scoped Markdown working memory under `.harness/runs/<scope-id>/` (`working.md`, `task.md`, lazy `findings/*.md`, and immutable `metadata.json`) with atomic writes, byte caps, bounded `read_memory_bounded()` retrieval, and path-confinement checks. |
@@ -131,11 +131,11 @@ flowchart LR
 | [`src/harness/evaluation/suite.py`](../src/harness/evaluation/suite.py) | Loads sorted task manifests (`load_suite_dir`), runs `evaluate_suite()` sequentially with SQLite trace persistence, writes `suite_summary.json` and `suite_summary.md` via `SuiteSummary`, runs Phase 5 `compare_strategies()` (`strategy_comparison.md`), and runs Phase 6 `compare_retrieval_modes()` (`retrieval_comparison.md`). |
 | [`src/harness/tools/__init__.py`](../src/harness/tools/__init__.py) | Exports `ToolResult` and `execute_tool`. |
 | [`src/harness/tools/dispatcher.py`](../src/harness/tools/dispatcher.py) | Defines the bounded frozen result type and `execute_tool(...)`; validates exact schemas before workspace access, retains the legacy `allow_edits=True` path only without policy, and owns edit/test AUTO/ASK/DENY checks, approval metadata, target revalidation, and dispatch. |
-| [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery and bounded UTF-8 line-range reads with workspace containment checks; successful reads include the SHA-256 of complete file bytes for edit preconditions. |
-| [`src/harness/tools/editing.py`](../src/harness/tools/editing.py) | Defines frozen `PreparedEdit`, separates `prepare_edit()` from `apply_prepared_edit()` so approved data is immutable and revalidated against the preimage, and retains `edit_file()` as the direct prepare/apply API; validates protected paths and reconciles writes into `unchanged`, `applied`, or `unknown`. |
+| [`src/harness/tools/repository.py`](../src/harness/tools/repository.py) | Implements ripgrep-based bounded file discovery (including root-listing recovery hints on missing directories) and bounded UTF-8 line-range reads with workspace containment checks; successful reads include the SHA-256 of complete file bytes for edit preconditions. |
+| [`src/harness/tools/editing.py`](../src/harness/tools/editing.py) | Defines frozen `PreparedEdit`, separates `prepare_edit()` from `apply_prepared_edit()` so approved data is immutable and revalidated against the preimage, supports both 1-based inclusive line-range (`start_line`/`end_line`) and exact `old_text` replacements, and retains `edit_file()` as the direct prepare/apply API; validates protected paths and reconciles writes into `unchanged`, `applied`, or `unknown`. |
 | [`src/harness/tools/search.py`](../src/harness/tools/search.py) | Validates regular expressions with ripgrep, runs bounded JSON lexical search under one deadline, filters workspace-relative matches and filename globs, deduplicates path/line hits, and returns sorted bounded previews. |
-| [`src/harness/tools/policy.py`](../src/harness/tools/policy.py) | Defines frozen `ToolPolicy` with edit/test `ToolMode` values and fixed pytest targets/timeout, plus frozen `ApprovalRequest` metadata for prepared edits and exact pytest invocations. |
-| [`src/harness/tools/testing.py`](../src/harness/tools/testing.py) | Validates configured targets before inference; runs only the fixed pytest argv, captures bounded UTF-8-safe output, kills and reaps POSIX process groups on timeout/cancellation/output/error, and preserves bounded result metadata. |
+| [`src/harness/tools/policy.py`](../src/harness/tools/policy.py) | Defines frozen `ToolPolicy` with edit/test `ToolMode` values, fixed pytest targets/timeout, and `auto_test_after_edit` flag, plus frozen `ApprovalRequest` metadata for prepared edits and exact pytest invocations. |
+| [`src/harness/tools/testing.py`](../src/harness/tools/testing.py) | Validates configured targets before inference; runs only the fixed compact pytest argv (`-q --tb=short --maxfail=5`), captures bounded UTF-8-safe output, kills and reaps POSIX process groups on timeout/cancellation/output/error, and preserves bounded result metadata. |
 
 ## Agent runtime contracts
 
@@ -210,7 +210,7 @@ name belongs in `name`, and a UTF-8-safe excerpt of the rejected response.
 `complete` triggers `evaluate_verification(run, policy)`. In read-only runs or coding
 runs without file changes, completion stores its summary as `final_response` and
 ends `COMPLETED` with `VerificationQuality.UNVERIFIED`. When files have been modified,
-completion requires a recorded passing `run_tests` call strictly after the latest edit;
+completion requires a recorded passing `run_tests` call at or after the latest edit (including same-step `auto_test_after_edit` runs when enabled);
 otherwise the proposal is rejected with corrective feedback. Repeated unverified
 proposals or identical valid tool calls trigger `NoProgressTracker` and terminate with
 `no_progress`. A verified run ends `COMPLETED` with `VerificationQuality.VERIFIED`.
@@ -332,10 +332,12 @@ complete original bytes, total lines, and actual returned line bounds; empty
 results use null bounds. `truncated` reports omitted ranges or content.
 
 `edit_file(root: Path, arguments: dict[str, object]) -> ToolResult` requires
-exactly `path`, `expected_sha256` (64 hex characters), `old_text`, and
-`new_text`. It edits an existing UTF-8 regular file up to 1 MiB after matching
-the current content hash and exactly one occurrence of `old_text`; empty old
-text is valid only for an empty file. It rejects binary/invalid UTF-8 files,
+`path`, `expected_sha256` (64 hex characters, auto-filled by `run_agent()` from
+the file's last `read_file` when omitted), `new_text`, and either 1-based
+inclusive `start_line`/`end_line` bounds (default schema) or exact `old_text`
+(backwards-compatible fallback; empty `old_text` or `1..1` line range is valid
+for an empty file). It edits an existing UTF-8 regular file up to 1 MiB after matching
+the current content hash and line range or unique `old_text` occurrence. It rejects binary/invalid UTF-8 files,
 protected path components, symlinks, hard links, and nonwritable files or
 parents. It preserves file mode and all bytes outside the match, stages and
 fsyncs a temporary file beside the target, then rechecks target identity and
@@ -357,7 +359,7 @@ revalidates preimage and identity before applying that exact operation.
 
 `run_tests(root: Path, target: str, timeout: float, *, deadline: float,
 cancelled: Callable[[], bool] | None = None) -> ToolResult` invokes only the
-fixed pytest argv with a configured exact target. `MAX_STREAM_BYTES` is 16 KiB
+fixed compact pytest argv (`-q --tb=short --maxfail=5 -- <target>`) with a configured exact target. `MAX_STREAM_BYTES` is 16 KiB
 per stream. `_test_result(...)` preserves command/outcome metadata while
 fitting output to the 32 KiB result budget; `_kill_group(process)` kills and
 reaps the POSIX process group; `_drain_and_reap(...)` closes readers and

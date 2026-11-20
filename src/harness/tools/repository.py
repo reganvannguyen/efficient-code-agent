@@ -25,7 +25,15 @@ def list_files(root: Path, arguments: dict[str, object]) -> ToolResult:
     """List sorted workspace-relative files using ripgrep's ignore rules."""
     directory = arguments.get("directory", ".")
     pattern = arguments.get("pattern")
-    base = _resolve(root, directory)
+    try:
+        base = _resolve(root, directory)
+    except ToolFailure as exc:
+        if exc.code == "not_found" and directory != ".":
+            raise ToolFailure(
+                "not_found",
+                "directory does not exist; omit directory (uses '.') to list workspace root",
+            ) from None
+        raise
     if not base.is_dir():
         raise ToolFailure("wrong_type", "directory must name a directory")
     rg = shutil.which("rg")

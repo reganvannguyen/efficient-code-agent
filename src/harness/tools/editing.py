@@ -38,6 +38,9 @@ def validate_edit_arguments(arguments: dict[str, object]) -> None:
     """Validate edit fields and canonical relative path before workspace access."""
     path = arguments.get("path")
     expected = arguments.get("expected_sha256")
+    has_old_text = "old_text" in arguments
+    has_start = "start_line" in arguments
+    has_end = "end_line" in arguments
     old_text = arguments.get("old_text")
     new_text = arguments.get("new_text")
     if not isinstance(path, str) or not path.strip() or "\x00" in path:
@@ -54,12 +57,51 @@ def validate_edit_arguments(arguments: dict[str, object]) -> None:
         or re.fullmatch(r"[0-9a-fA-F]{64}", expected) is None
     ):
         raise ToolFailure("invalid_arguments", "expected_sha256 must be 64 hex digits")
-    if not isinstance(old_text, str) or not isinstance(new_text, str):
-        raise ToolFailure("invalid_arguments", "old_text and new_text must be strings")
-    if "\x00" in old_text or "\x00" in new_text:
+    if not isinstance(new_text, str):
+        raise ToolFailure("invalid_arguments", "new_text must be a string")
+    if "\x00" in new_text:
         raise ToolFailure("invalid_arguments", "edit text cannot contain NUL")
+    if has_old_text and (has_start or has_end):
+        raise ToolFailure(
+            "invalid_arguments",
+            "provide either old_text or start_line/end_line, not both",
+        )
+    if has_start or has_end:
+        if not (has_start and has_end):
+            raise ToolFailure(
+                "invalid_arguments",
+                "start_line and end_line must both be provided",
+            )
+        start_line = arguments.get("start_line")
+        end_line = arguments.get("end_line")
+        if (
+            isinstance(start_line, bool)
+            or isinstance(end_line, bool)
+            or not isinstance(start_line, int)
+            or not isinstance(end_line, int)
+            or start_line < 1
+            or end_line < start_line
+        ):
+            raise ToolFailure(
+                "invalid_arguments",
+                "start_line and end_line must be positive integers with start_line <= end_line",
+            )
+        old_bytes = b""
+    else:
+        if not has_old_text or not isinstance(old_text, str):
+            raise ToolFailure(
+                "invalid_arguments",
+                "provide old_text or start_line and end_line",
+            )
+        if "\x00" in old_text:
+            raise ToolFailure("invalid_arguments", "edit text cannot contain NUL")
+        try:
+            old_bytes = old_text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ToolFailure(
+                "invalid_arguments", "edit text must be valid UTF-8"
+            ) from None
     try:
-        old_bytes = old_text.encode("utf-8")
         new_bytes = new_text.encode("utf-8")
     except UnicodeEncodeError:
         raise ToolFailure(
@@ -95,7 +137,8 @@ def prepare_edit(root: Path, arguments: dict[str, object]) -> PreparedEdit | Too
     """Validate an edit and prepare its exact replacement without writing."""
     path = str(arguments["path"])
     expected = str(arguments["expected_sha256"]).lower()
-    old_text = str(arguments["old_text"])
+    use_line_range = "start_line" in arguments and "end_line" in arguments
+    old_text = "" if use_line_range else str(arguments["old_text"])
     new_text = str(arguments["new_text"])
     target = root / path
     relative = Path(path).as_posix()
@@ -137,16 +180,50 @@ def prepare_edit(root: Path, arguments: dict[str, object]) -> PreparedEdit | Too
     actual_hash = hashlib.sha256(original).hexdigest()
     if actual_hash != expected:
         raise ToolFailure("conflict", "file content no longer matches expected_sha256")
-    if old_text == "":
-        if text != "":
-            raise ToolFailure("conflict", "empty old_text only matches an empty file")
-        start, end = 0, 0
+    if use_line_range:
+        start_line = int(arguments["start_line"])  # type: ignore[arg-type]
+        end_line = int(arguments["end_line"])  # type: ignore[arg-type]
+        lines = text.splitlines(keepends=True)
+        if not lines:
+            if start_line != 1 or end_line != 1:
+                raise ToolFailure(
+                    "conflict",
+                    f"line range {start_line}-{end_line} is out of bounds for empty file",
+                )
+            old_text = ""
+            updated_text = new_text
+        else:
+            if end_line > len(lines):
+                raise ToolFailure(
+                    "conflict",
+                    f"line range {start_line}-{end_line} exceeds file length ({len(lines)} lines)",
+                )
+            old_text = "".join(lines[start_line - 1 : end_line])
+            effective_new = new_text
+            if effective_new and not effective_new.endswith(("\n", "\r\n")):
+                if old_text.endswith("\r\n"):
+                    effective_new += "\r\n"
+                elif old_text.endswith("\n"):
+                    effective_new += "\n"
+            updated_text = (
+                "".join(lines[: start_line - 1])
+                + effective_new
+                + "".join(lines[end_line:])
+            )
+        replacement = updated_text.encode("utf-8")
     else:
-        start = text.find(old_text)
-        if start < 0 or text.find(old_text, start + 1) >= 0:
-            raise ToolFailure("conflict", "old_text must occur exactly once")
-        end = start + len(old_text)
-    replacement = (text[:start] + new_text + text[end:]).encode("utf-8")
+        if old_text == "":
+            if text != "":
+                raise ToolFailure(
+                    "conflict", "empty old_text only matches an empty file"
+                )
+            start, end = 0, 0
+        else:
+            start = text.find(old_text)
+            if start < 0 or text.find(old_text, start + 1) >= 0:
+                raise ToolFailure("conflict", "old_text must occur exactly once")
+            end = start + len(old_text)
+        replacement = (text[:start] + new_text + text[end:]).encode("utf-8")
     if len(replacement) > MAX_FILE_BYTES:
         raise ToolFailure("invalid_arguments", "replacement exceeds the 1 MiB limit")
     diff = _unified_diff(relative, text, replacement.decode("utf-8"))

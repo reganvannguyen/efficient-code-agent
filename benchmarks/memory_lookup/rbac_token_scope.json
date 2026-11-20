@@ -1,0 +1,20 @@
+{
+  "task_id": "mem__rbac_token_scope",
+  "repo": "/Users/regannguyen/projects/efficient-code-agent/.runs/memory_lookup_repos/rbac_token_scope",
+  "base_commit": "6ab52907a5c6984d0ff4da1324d72272b1f66bf4",
+  "issue_text": "Authorization checks are failing for delegated roles, legacy scope names, and tokens near expiration.\n\nInvestigate the authorization package and fix the endpoint guard so that:\n1. Revoked tokens are always rejected, while non-revoked tokens honor the configured expiration grace window.\n2. Both direct token scopes and requested scopes normalize legacy aliases.\n3. Role permissions include all transitively inherited parent roles.\n\nEnsure all tests pass.",
+  "oracle_tests": [
+    "tests/test_authz.py"
+  ],
+  "oracle_tier": "local_full",
+  "agent_test_targets": [
+    "tests/test_authz.py"
+  ],
+  "metadata": {
+    "source": "local/memory_lookup",
+    "slug": "rbac_token_scope",
+    "difficulty": "medium",
+    "test_file": "tests/test_authz.py",
+    "file_count": 16
+  }
+}

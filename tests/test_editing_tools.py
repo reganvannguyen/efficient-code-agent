@@ -424,3 +424,105 @@ def test_edit_diff_and_serialized_result_stay_bounded(tmp_path):
     assert len(payload) <= MAX_RESULT_BYTES
     assert result.data["write_state"] == "applied"
     assert result.data["changed_paths"] == ["x"]
+
+
+def test_edit_line_range_replaces_block_and_preserves_trailing_newline(tmp_path):
+    target = tmp_path / "sample.py"
+    original = "line1\nline2\nline3\nline4\n"
+    target.write_text(original, encoding="utf-8")
+    result = execute_tool(
+        ToolAction(
+            "edit_file",
+            {
+                "path": "sample.py",
+                "expected_sha256": hashlib.sha256(original.encode()).hexdigest(),
+                "start_line": 2,
+                "end_line": 3,
+                "new_text": "updated2\nupdated3",
+            },
+        ),
+        tmp_path,
+        allow_edits=True,
+    )
+    assert result.ok
+    assert result.data["write_state"] == "applied"
+    assert target.read_text(encoding="utf-8") == "line1\nupdated2\nupdated3\nline4\n"
+
+
+def test_edit_line_range_deletes_lines_and_handles_empty_file(tmp_path):
+    target = tmp_path / "sample.py"
+    original = "a\nb\nc\n"
+    target.write_text(original, encoding="utf-8")
+    deleted = execute_tool(
+        ToolAction(
+            "edit_file",
+            {
+                "path": "sample.py",
+                "expected_sha256": hashlib.sha256(original.encode()).hexdigest(),
+                "start_line": 2,
+                "end_line": 2,
+                "new_text": "",
+            },
+        ),
+        tmp_path,
+        allow_edits=True,
+    )
+    assert deleted.ok
+    assert target.read_text(encoding="utf-8") == "a\nc\n"
+
+    empty = tmp_path / "empty.py"
+    empty.write_text("", encoding="utf-8")
+    filled = execute_tool(
+        ToolAction(
+            "edit_file",
+            {
+                "path": "empty.py",
+                "expected_sha256": hashlib.sha256(b"").hexdigest(),
+                "start_line": 1,
+                "end_line": 1,
+                "new_text": "x = 1\n",
+            },
+        ),
+        tmp_path,
+        allow_edits=True,
+    )
+    assert filled.ok
+    assert empty.read_text(encoding="utf-8") == "x = 1\n"
+
+
+def test_edit_line_range_rejects_out_of_bounds_and_mixed_arguments(tmp_path):
+    target = tmp_path / "sample.py"
+    original = "a\nb\n"
+    target.write_text(original, encoding="utf-8")
+    oob = execute_tool(
+        ToolAction(
+            "edit_file",
+            {
+                "path": "sample.py",
+                "expected_sha256": hashlib.sha256(original.encode()).hexdigest(),
+                "start_line": 1,
+                "end_line": 5,
+                "new_text": "x",
+            },
+        ),
+        tmp_path,
+        allow_edits=True,
+    )
+    assert not oob.ok and oob.error_code == "conflict"
+
+    mixed = execute_tool(
+        ToolAction(
+            "edit_file",
+            {
+                "path": "sample.py",
+                "expected_sha256": hashlib.sha256(original.encode()).hexdigest(),
+                "old_text": "a",
+                "start_line": 1,
+                "end_line": 1,
+                "new_text": "x",
+            },
+        ),
+        tmp_path,
+        allow_edits=True,
+    )
+    assert not mixed.ok and mixed.error_code == "invalid_arguments"

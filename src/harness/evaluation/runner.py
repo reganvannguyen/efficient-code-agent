@@ -79,6 +79,7 @@ def _default_agent_policy(manifest: TaskManifest) -> ToolPolicy:
             edit_file=ToolMode.AUTO,
             run_tests=ToolMode.AUTO,
             test_targets=manifest.agent_test_targets,
+            auto_test_after_edit=True,
         )
     return ToolPolicy(
         edit_file=ToolMode.AUTO,
