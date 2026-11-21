@@ -1,6 +1,6 @@
 # Agent Runtime
 
-> **Status:** The default Phase 2 read-only CLI, bounded lexical `search_code`, opt-in coding profile with approval-gated edits, allowlisted pytest execution, post-edit verification, and no-progress handling are implemented.
+> **Status:** Implemented across Phases 1–7, including graduated loop intervention, line-range `edit_file` with automatic SHA-256 verification and exact `old_text` fallback, allowlisted compact pytest (`-q --tb=short --maxfail=5`, with optional post-edit auto-test), root `list_files` lookup guidance, and dynamic `read_memory` gating. See [`code-map.md`](code-map.md) for current signatures.
 > **Scope:** CLI-driven, single-process Python coding agent using a local llama.cpp model.  
 > **Related:** [Architecture](architecture.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 
@@ -294,13 +294,11 @@ execute with the current user's permissions; this is not an OS sandbox.
 - `read_file` also returns the lowercase SHA-256 of the complete original file
   bytes, independent of the requested line range. Use it as the edit
   precondition.
-- `edit_file` requires exactly `path`, `expected_sha256`, `old_text`, and
-  `new_text`. It accepts one existing UTF-8 regular file up to 1 MiB, rejects
+- `edit_file` accepts `path`, `new_text`, optional `expected_sha256` (auto-filled by `run_agent()` from the file's last `read_file` when omitted; unread edits are rejected), and either 1-based inclusive `start_line`/`end_line` bounds (default schema) or exact `old_text` (backwards-compatible fallback; empty text or `1..1` matches an empty file). It accepts one existing UTF-8 regular file up to 1 MiB, rejects
   NUL/binary data, protected path components (`.git`, `.codex`, `.ssh`, virtual
   environments, generated/build/cache directories, and `.env*` files), any
-  symlink component, hard links, and nonwritable files/directories. It checks
-  the current hash and requires `old_text` to occur exactly once; empty text
-  matches only an empty file. It stages a same-directory temporary file, fsyncs
+  symlink component, hard links, and nonwritable files/directories. It verifies
+  the current content hash and line range or unique `old_text` match. It stages a same-directory temporary file, fsyncs
   it, then rechecks file identity and bytes before `os.replace`. The original
   mode and all bytes outside the replacement are preserved. Identical
   replacements return `write_state="unchanged"` without writing. Results carry
@@ -316,8 +314,8 @@ execute with the current user's permissions; this is not an OS sandbox.
   files.
 
 `run_tests` requires exactly `preset="pytest"` and a `target` equal to one
-configured policy target. Its fixed command accepts no model-supplied flags,
-arbitrary commands, or pytest node selectors. Results include `preset`,
+configured policy target. Its fixed compact command (`-m pytest -q --tb=short --maxfail=5 -- <target>`) accepts no model-supplied flags,
+arbitrary commands, or pytest node selectors, and can optionally auto-run after successful edits in `AUTO` mode (`auto_test_after_edit`, auto-disabling on pytest exit code `5`). Results include `preset`,
 `target`, `argv`, `exit_code`, bounded replacement-decoded `stdout` and
 `stderr`, and `timed_out`; outcomes use `tests_failed`, `timeout`,
 `output_limit`, `cancelled`, and controlled execution errors. A passing result
@@ -354,8 +352,7 @@ protected-path and single-file rules above. These checks are not an OS sandbox.
 ## 7. Completion and verification
 
 The model may **propose** completion, but cannot declare its own run successful.
-Current `run_agent()` accepts the proposal as `COMPLETED` and reports it as
-unverified; the verifier policy below is planned work and is not implemented.
+In coding mode when files have changed, post-edit test verification (`evaluate_verification`) and graduated loop intervention (`NoProgressTracker`) are enforced in [`src/harness/agent/verification.py`](../src/harness/agent/verification.py); read-only runs and unchanged workspaces end `COMPLETED` as `unverified`.
 
 A completion proposal should contain:
 

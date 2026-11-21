@@ -1,6 +1,6 @@
 # Repository Retrieval
 
-> **Status:** Bounded lexical `search_code` is implemented in the Phase 3 runtime; syntax-aware retrieval and ranking remain proposed.
+> **Status:** Implemented (Phase 3 bounded lexical `search_code` + Phase 6 Tree-sitter Python `CodeAwareRetrievalBackend`, cached `RepoSymbolIndex`, deterministic definition-above-comment ranking, and bounded line-numbered snippets). See [`code-map.md`](code-map.md) and [`phase6-comparison-report.md`](phase6-comparison-report.md).
 > **Target:** Small quantized coding LLMs on a 16 GB Apple Silicon MacBook Air.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Benchmarking](benchmarking.md)
 

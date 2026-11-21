@@ -2,11 +2,14 @@
 
 ## Dataset separation
 
-- `benchmarks/smoke/` — **5-task smoke suite** for validating the baseline runner, artifact collection, and macOS resource measurement.
+- `benchmarks/protocol.json` — Frozen Phase 7 evaluation configuration (`FrozenEvaluationProtocol`).
+- `benchmarks/smoke/` — **5-task smoke suite** for validating the baseline runner, artifact collection, and macOS resource measurement (`local_targeted`).
+- `benchmarks/exercism/` — **10-task curated [Exercism Python](../docs/exercism-3way-comparison.md) suite** (`local_full`, generated locally via [`scripts/build_exercism_suite.py`](../scripts/build_exercism_suite.py)) used for the 3-way harness comparison.
+- `benchmarks/memory_lookup/` — **5-task multi-file lookup & working-memory suite** (`local_full`, generated locally via [`scripts/build_memory_suite.py`](../scripts/build_memory_suite.py)) with 16 files per repo and unnamed target files.
 - `benchmarks/dev/` — Reserved for development comparisons and tuning (Phase 5/6).
 - `benchmarks/held_out/` — Reserved for final untouched evaluation; **do not tune on held-out tasks**.
 
-> **Note:** Local runs over these manifests use `oracle_tier = "local_targeted"` and are **not** official SWE-bench Verified scores.
+> **Note:** Local runs over these manifests use `local_targeted` or `local_full` local `pytest` oracles and are **not** official SWE-bench Verified scores. See [`docs/final-benchmark-report.md`](../docs/final-benchmark-report.md) and [`docs/exercism-3way-comparison.md`](../docs/exercism-3way-comparison.md) for published results.
 
 ## Selection criteria (macOS ARM, 16 GB MacBook Air)
 

@@ -1,6 +1,6 @@
 # Benchmarking and Evaluation
 
-> **Status:** Proposed evaluation plan — no benchmark results have been collected.  
+> **Status:** Evaluation pipeline implemented (Phases 4 & 7) and results published in [`final-benchmark-report.md`](final-benchmark-report.md), [`exercism-3way-comparison.md`](exercism-3way-comparison.md), and [`phase7-evaluation-protocol.md`](phase7-evaluation-protocol.md). The sections below preserve the original evaluation design specification.  
 > **Target hardware:** 16 GB Apple Silicon MacBook Air.  
 > **Primary objective:** Determine whether retrieval and CLM-inspired editable context improve coding-task success for small local models under comparable resource limits.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md)

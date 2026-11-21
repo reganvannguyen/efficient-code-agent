@@ -1,6 +1,6 @@
 # Context and Memory
 
-> **Status:** Proposed design — not yet implemented.  
+> **Status:** Implemented (Phase 5 + UI/runtime refinements): swappable `EditableContextStrategy`, `WorkingMemoryStore` (`working.md`, `task.md`, `findings/*.md`), `update_context` (`replace`/`append`), bounded `read_memory` (dynamically gated out of `response_schema` when `findings/` is empty and notes are untrimmed), and deterministic `TokenBudget` overflow pruning. See [`code-map.md`](code-map.md) and [`phase5-comparison-report.md`](phase5-comparison-report.md).  
 > **Target:** Small quantized coding LLMs running locally on a 16 GB Apple Silicon MacBook Air.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
 

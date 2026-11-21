@@ -15,19 +15,15 @@ The weights are stored in `$HOME/models`, outside this repository. `.gitignore` 
 
 ## Launch command and configuration
 
-The running process was observed with these arguments:
-
-```sh
-llama-server -m /Users/regannguyen/models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf -c 8192
-```
-
-Portable equivalent for a checkout on another machine:
+Start the local server with an 8,192-token context window:
 
 ```sh
 llama-server -m "$HOME/models/Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf" -c 8192
 ```
 
-`-c 8192` sets an 8,192-token context window. The server used its default host (`127.0.0.1`) and port (`9931`). CPU thread count, batch sizes, and GPU-layer settings were not overridden; they use the installed version's defaults. This bounds context, not total system RAM.
+*(The original Phase 1 smoke test below used `llama-server`'s older port `9931`; modern CLI/UI commands now default to `http://127.0.0.1:8080` and also support Ollama `:11434` and LM Studio `:1234`.)*
+
+`-c 8192` sets an 8,192-token context window. In the original smoke test, the server used host `127.0.0.1` and port `9931`. CPU thread count, batch sizes, and GPU-layer settings were not overridden; they use the installed version's defaults. This bounds context, not total system RAM.
 
 ## HTTP smoke test
 
@@ -53,12 +49,15 @@ The Python CLI can send a single non-streaming request:
 python -m harness chat "Say hello in one sentence."
 ```
 
-The one-shot command defaults to `http://127.0.0.1:9931`, model
-`Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf`, a 120-second timeout, and 256 maximum
-tokens. Override them with `--base-url`, `--model`, `--timeout`, and
-`--max-tokens`. The response is written to stdout; token counts, when reported,
-are written to stderr. HTTP, connection, timeout, and malformed-response errors
-are shown as concise CLI errors.
+The CLI and Web UI now resolve server settings via
+`CLI flags (--base-url, --model) > HARNESS_BASE_URL / HARNESS_MODEL > ~/.harness/config.json > http://127.0.0.1:8080`
+(defaulting the model name to `'local-model'` or auto-detecting from `/v1/models`),
+and also work with **Ollama** (`:11434`) and **LM Studio** (`:1234`)—see
+[CLI Reference](cli-reference.md). In the original Phase 1 smoke test below, the
+command targeted the `9931` server with `Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf`,
+a 120-second timeout, and 256 maximum tokens. Response text is written to stdout;
+token counts, when reported, are written to stderr, and HTTP/connection/timeout/malformed-response
+errors are shown as concise CLI errors.
 
 ## Interactive CLI
 
