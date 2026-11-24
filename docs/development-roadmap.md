@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Phase 1, Phase 2, and Phase 3 (coding agent with edit-test-retry, post-edit verification, and fixture isolation) are fully implemented, with deterministic integration tests and verified fixture recovery. Phase 4 baseline evaluation is the next milestone.
+> **Status:** Phases 1–7 are implemented (read-only CLI, coding/verification loop, SQLite evaluation runner, editable working memory, Tree-sitter `code_aware` retrieval, 4-way ablations, and 3-way external comparisons), alongside the local Web UI (`harness ui`), graduated loop intervention, and PR #85 ergonomics (auto-SHA, auto-test, line-range edits, compact `pytest`, dynamic `read_memory` gating, and `benchmarks/memory_lookup/`). See [Code Map](code-map.md), [Final Benchmark Report](final-benchmark-report.md), and [Exercism 3-Way Comparison](exercism-3way-comparison.md).
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -162,19 +162,19 @@ Create a measurable baseline **before** introducing retrieval or memory optimiza
 - [x] Record model calls, input/output tokens, tool calls, context size, wall time, and verification results.
 - [x] Add SQLite for structured traces and metrics where useful; keep the runtime independent of its persistence backend.
 - [x] Save run-specific patches, logs, and configuration metadata.
-- [ ] Build a fixture-based evaluation runner with clean checkout and separate evaluation workspace.
-- [ ] Establish a documented macOS memory measurement procedure.
-- [ ] Select five feasible real benchmark tasks for smoke testing; document selection and exclusions.
-- [ ] Separate development tasks from future held-out tasks.
-- [ ] Run the baseline repeatedly to confirm the runner produces interpretable results.
+- [x] Build a fixture-based evaluation runner with clean checkout and separate evaluation workspace.
+- [x] Establish a documented macOS memory measurement procedure.
+- [x] Select five feasible real benchmark tasks for smoke testing; document selection and exclusions.
+- [x] Separate development tasks from future held-out tasks.
+- [x] Run the baseline repeatedly to confirm the runner produces interpretable results.
 
 ### Tests
 
 - [x] Each run has a unique ID and complete terminal outcome.
 - [x] Model/tool failures are recorded rather than silently discarded.
-- [ ] A candidate patch is evaluated against a clean task snapshot.
-- [ ] Setup failures are distinguished from unresolved coding tasks.
-- [ ] Re-running the same fixture does not reuse prior edits or working memory.
+- [x] A candidate patch is evaluated against a clean task snapshot.
+- [x] Setup failures are distinguished from unresolved coding tasks.
+- [x] Re-running the same fixture does not reuse prior edits or working memory.
 
 ### Deliverable
 
@@ -228,25 +228,25 @@ Give the agent better code discovery without requiring it to read large parts of
 
 ### Implementation tasks
 
-- [ ] Reuse and harden the Phase 3 ripgrep adapter.
-- [ ] Add Tree-sitter parsing for Python source files first.
-- [ ] Extract functions, classes, methods, imports, and source ranges.
-- [ ] Build a compact repository map of symbol names and locations.
-- [ ] Add deterministic candidate ranking and bounded snippet formatting behind the existing `search_code` / `read_file` interfaces; defer extra model-facing symbol tools.
-- [ ] Invalidate affected index entries after edits or external file changes.
-- [ ] Handle unsupported languages and parser failures by falling back to lexical search.
-- [ ] Integrate snippet selection with the global context budget.
-- [ ] Keep retrieval independently switchable from editable context.
-- [ ] Compare lexical-only and code-aware retrieval on development tasks.
+- [x] Reuse and harden the Phase 3 ripgrep adapter.
+- [x] Add Tree-sitter parsing for Python source files first.
+- [x] Extract functions, classes, methods, imports, and source ranges.
+- [x] Build a compact repository map of symbol names and locations.
+- [x] Add deterministic candidate ranking and bounded snippet formatting behind the existing `search_code` / `read_file` interfaces; defer extra model-facing symbol tools.
+- [x] Invalidate affected index entries after edits or external file changes.
+- [x] Handle unsupported languages and parser failures by falling back to lexical search.
+- [x] Integrate snippet selection with the global context budget.
+- [x] Keep retrieval independently switchable from editable context.
+- [x] Compare lexical-only and code-aware retrieval on development tasks.
 
 ### Tests
 
-- [ ] Definitions rank above incidental mentions in a controlled fixture.
-- [ ] Symbol locations and snippet line numbers are correct.
-- [ ] Index updates after edits, renames, and deletions.
-- [ ] Large/ignored/generated files are handled within limits.
-- [ ] Parsing failures do not prevent basic file search.
-- [ ] The agent can locate a relevant symbol in a multi-file fixture.
+- [x] Definitions rank above incidental mentions in a controlled fixture.
+- [x] Symbol locations and snippet line numbers are correct.
+- [x] Index updates after edits, renames, and deletions.
+- [x] Large/ignored/generated files are handled within limits.
+- [x] Parsing failures do not prevent basic file search.
+- [x] The agent can locate a relevant symbol in a multi-file fixture.
 
 ### Deliverable
 
@@ -264,25 +264,25 @@ Evaluate whether our techniques improve coding-task resolution and resource effi
 
 ### Implementation tasks
 
-- [ ] Run four internal conditions: baseline, retrieval-only, CLM-only, combined.
-- [ ] Pin the same model, quantization, context capacity, task set, and evaluation oracle.
-- [ ] Start with an 8K context capacity; evaluate 16K only if stable and feasible.
-- [ ] Add mini-SWE-agent as an external comparison using the same local model and selected tasks.
-- [ ] Document differences in prompts, tools, permissions, and execution policies.
+- [x] Run four internal conditions: baseline, retrieval-only, CLM-only, combined.
+- [x] Pin the same model, quantization, context capacity, task set, and evaluation oracle.
+- [x] Start with an 8K context capacity; evaluate 16K only if stable and feasible.
+- [x] Add mini-SWE-agent as an external comparison using the same local model and selected tasks.
+- [x] Document differences in prompts, tools, permissions, and execution policies.
 - [ ] Expand from five smoke tasks to a proposed 20-task evaluation and potentially 50 tasks.
 - [ ] Use separate held-out tasks for reported results.
-- [ ] Record task resolution, peak memory, tokens, calls, wall time, and failure reasons.
-- [ ] Repeat trials where feasible and report uncertainty and per-task regressions.
+- [x] Record task resolution, peak memory, tokens, calls, wall time, and failure reasons.
+- [x] Repeat trials where feasible and report uncertainty and per-task regressions.
 - [ ] Validate selected patches with an official-compatible evaluator if practical.
-- [ ] Publish a reproducible report with negative results and limitations.
+- [x] Publish a reproducible report with negative results and limitations.
 
 ### Tests
 
-- [ ] Each condition starts from the same repository snapshot.
-- [ ] Evaluation patches cannot access reference solutions.
-- [ ] Task manifests and results contain enough metadata to reproduce runs.
-- [ ] Locally validated results are not mislabeled as official benchmark scores.
-- [ ] Metrics are collected consistently across conditions.
+- [x] Each condition starts from the same repository snapshot.
+- [x] Evaluation patches cannot access reference solutions.
+- [x] Task manifests and results contain enough metadata to reproduce runs.
+- [x] Locally validated results are not mislabeled as official benchmark scores.
+- [x] Metrics are collected consistently across conditions.
 
 ### Deliverable
 

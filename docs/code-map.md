@@ -428,21 +428,27 @@ With an empty argument list it calls `interactive()`. Otherwise accepts:
 
 ```text
 chat PROMPT [--base-url URL] [--model NAME] [--timeout SECONDS] [--max-tokens N]
-run TASK [--repo PATH] [--base-url URL] [--model NAME] [--timeout SECONDS]
-    [--max-tokens N] [--run-timeout SECONDS] [--max-model-calls N] [--max-steps N]
-    [--coding] [--auto-approve] [--test-target PATH]... [--test-timeout SECONDS]
+run TASK [--repo PATH] [--base-url URL] [--model NAME] [--timeout SECONDS] ...
+session [--repo PATH] [--base-url URL] [--model NAME] ...
+ui [--host HOST] [--port PORT] [--repo PATH] [--base-url URL] [--model NAME]
+    [--db-path PATH] [--memory-dir PATH] [--no-browser]
 ```
 
-Defaults: `http://127.0.0.1:9931`,
-`Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf`, 120 seconds, and 256 tokens. A blank
+Server/model settings resolve via `harness.config.resolve_server_settings()`
+with precedence CLI flags (`--base-url`, `--model`) >
+`HARNESS_BASE_URL`/`HARNESS_MODEL` > `~/.harness/config.json` > default
+(`http://127.0.0.1:8080`, model `'local-model'`). `chat` defaults to a
+120-second timeout and 256 tokens. A blank
 prompt, non-finite or non-positive timeout, or non-positive token limit is an
 argparse error (exit 2). A client or input validation error is printed to
 stderr and exits 1. Successful response text goes to stdout; token counts go to
 stderr only when at least one count is available.
 
-`run TASK` defaults to the current directory, the same local server/model,
+`run TASK` defaults to the current directory, the resolved local server/model,
 256 response tokens, a 120-second request timeout, a 300-second run deadline,
-20 model calls, and 20 steps. `--timeout` is passed to the runtime as its
+20 model calls, and 20 steps (while `session` defaults to `editable_context`
+and 1024 response tokens, and `ui` serves the local web UI on
+`http://127.0.0.1:8765`). `--timeout` is passed to the runtime as its
 request timeout; the runtime also shortens it to the remaining run deadline.
 `--coding` opts into separate ASK edit/test policies, `--auto-approve` requires
 `--coding` and explicitly grants AUTO, repeated `--test-target` values replace
@@ -478,9 +484,11 @@ Internal shared formatter in [`cli.py`](../src/harness/cli.py). Prints response
 text to stdout and any available token counts to stderr for both interactive
 and one-shot requests.
 
-### `chat(prompt: str, *, base_url: str = 'http://127.0.0.1:9931', model: str = 'Qwen2.5-Coder-7B-Instruct-Q4_K_M.gguf', timeout: float = 120, max_tokens: int = 256, response_schema: dict[str, object] | None = None, system_prompt: str | None = None) -> ChatResponse`
+### `chat(prompt: str, *, base_url: str = DEFAULT_BASE_URL, model: str = 'local-model', timeout: float = 120, max_tokens: int = 256, response_schema: dict[str, object] | None = None, system_prompt: str | None = None) -> ChatResponse`
 
-Defined in [`llama_client.py`](../src/harness/llama_client.py). Requires a
+Defined in [`llama_client.py`](../src/harness/llama_client.py), where
+`DEFAULT_BASE_URL` is imported from [`config.py`](../src/harness/config.py)
+(`'http://127.0.0.1:8080'`). Requires a
 non-blank prompt, finite positive timeout, positive integer `max_tokens`, and a
 dictionary or `None` for `response_schema`, and a nonblank string or `None` for
 `system_prompt`. It POSTs JSON to
