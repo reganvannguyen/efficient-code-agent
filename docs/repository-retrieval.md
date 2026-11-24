@@ -1,6 +1,6 @@
 # Repository Retrieval
 
-> **Status:** Proposed design — not yet implemented.  
+> **Status:** Implemented (Phase 3 bounded lexical `search_code` + Phase 6 Tree-sitter Python `CodeAwareRetrievalBackend`, cached `RepoSymbolIndex`, deterministic definition-above-comment ranking, and bounded line-numbered snippets). See [`code-map.md`](code-map.md) and [`phase6-comparison-report.md`](phase6-comparison-report.md).
 > **Target:** Small quantized coding LLMs on a 16 GB Apple Silicon MacBook Air.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Benchmarking](benchmarking.md)
 
@@ -75,6 +75,20 @@ The baseline agent receives basic, bounded tools:
 - `list_files(directory?, pattern?)`
 - `search_code(query, glob?, max_results?)`
 - `read_file(path, start_line, end_line)`
+
+The implemented `search_code` uses ripgrep regular-expression syntax for
+`query`; `glob` is a separate positive Python `Path.match` filename filter.
+It returns `{query, matches}` where each match contains a workspace-relative
+`path`, 1-based `line`, and single-line `preview`. Results are deduplicated and
+sorted by path and line. The request accepts at most 4096 UTF-8 query bytes,
+defaults to 50 results (maximum 200), scans files up to 1 MiB, limits previews
+to 512 UTF-8 bytes, bounds ripgrep output and serialized output to 64 KiB and
+32 KiB respectively, and uses one five-second deadline for regex validation
+and search. Results mark truncation when a bound clips results or previews.
+Hidden paths and generated directories are excluded, normal ripgrep ignore
+rules apply, and a user glob cannot override either filter. A successful empty
+result means no matches were found within that bounded visible search; it does
+not establish absence from ignored or excluded files.
 
 These are sufficient for a minimal coding agent. They remain available in all experimental modes.
 

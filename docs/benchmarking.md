@@ -1,6 +1,6 @@
 # Benchmarking and Evaluation
 
-> **Status:** Proposed evaluation plan — no benchmark results have been collected.  
+> **Status:** Evaluation pipeline implemented (Phases 4 & 7) and results published in [`final-benchmark-report.md`](final-benchmark-report.md), [`exercism-3way-comparison.md`](exercism-3way-comparison.md), and [`phase7-evaluation-protocol.md`](phase7-evaluation-protocol.md). The sections below preserve the original evaluation design specification.  
 > **Target hardware:** 16 GB Apple Silicon MacBook Air.  
 > **Primary objective:** Determine whether retrieval and CLM-inspired editable context improve coding-task success for small local models under comparable resource limits.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md)
@@ -119,6 +119,13 @@ A **quantized 7B coding model** is a reasonable candidate to test, but model sel
 
 Run harness conditions **sequentially** against the same local inference configuration, not with multiple large models loaded concurrently. If model servers are restarted between runs, apply the same restart policy to all conditions.
 
+### macOS memory measurement procedure
+
+- **Baseline context capacity:** Start at **8K** (`context_window=8192`). Do not assume 16K is safe on a 16 GB MacBook Air without testing memory pressure and swap first.
+- **Pin configuration:** Capture `ExperimentConfig` (`ModelSpec` with GGUF filename/SHA-256/quantization, `llama.cpp` version/args, sampling settings, and `git` commit) in each run's `manifest.json`.
+- **Sampling method:** `sample_macos_memory(server_pid=...)` records before/after snapshots using `sysctl vm.swapusage` (swap used/total), `memory_pressure -Q` (`normal`/`warn`/`critical`), and `ps -o rss= -p <pid>` (`llama-server` RSS).
+- **Limitations and honesty:** Subprocess probes introduce small measurement overhead and point-in-time uncertainty (they are not continuous kernel page-table traces). Missing or unavailable metrics remain `None` and are never estimated. Fewer prompt tokens do **not** imply lower peak KV-cache RAM when `llama-server` pre-allocates KV cache for the configured context window.
+
 ## 6. Task selection and dataset hygiene
 
 A lightweight subset should be selected using **documented, reproducible criteria**, not by choosing tasks our harness already solves.
@@ -172,6 +179,8 @@ flowchart TD
 8. Reset and repeat for each condition.
 
 Never run untrusted benchmark tests with broad host permissions. On macOS, prefer isolated environments and explicit command allowlists. Python virtual environments isolate dependencies, **not** malicious code. Docker/VM isolation may still be required for untrusted workloads.
+
+**Trusted-fixture policy:** The local evaluation runner (`harness.evaluation`) executes `setup_commands` and `pytest` oracle targets directly on the host inside temporary checkouts. Use this local runner only for trusted fixtures and vetted repositories; untrusted external benchmark projects require container or VM isolation before running setup scripts or test suites.
 
 ## 8. Verification and success criteria
 

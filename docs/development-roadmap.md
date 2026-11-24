@@ -1,6 +1,6 @@
 # Development Roadmap
 
-> **Status:** Planned — implementation has not started.  
+> **Status:** Phases 1–7 are implemented (read-only CLI, coding/verification loop, SQLite evaluation runner, editable working memory, Tree-sitter `code_aware` retrieval, 4-way ablations, and 3-way external comparisons), alongside the local Web UI (`harness ui`), graduated loop intervention, and PR #85 ergonomics (auto-SHA, auto-test, line-range edits, compact `pytest`, dynamic `read_memory` gating, and `benchmarks/memory_lookup/`). See [Code Map](code-map.md), [Final Benchmark Report](final-benchmark-report.md), and [Exercism 3-Way Comparison](exercism-3way-comparison.md).
 > **Target:** A local-first CLI coding agent running a small quantized LLM on a 16 GB Apple Silicon MacBook Air.  
 > **Approach:** Build a functioning baseline first, add one capability at a time, and measure each change.  
 > **Related:** [Architecture](architecture.md) · [Agent Runtime](agent-runtime.md) · [Context and Memory](context-and-memory.md) · [Repository Retrieval](repository-retrieval.md) · [Benchmarking](benchmarking.md)
@@ -51,24 +51,24 @@ These are milestone gates, **not estimates of calendar duration**.
 
 ### Objective
 
-Prove that a quantized coding model can run locally and be called reliably from Python. Do not build an agent loop yet.
+Prove that a quantized coding model can run locally and receive a Python chat request. Do not build an agent loop yet.
 
 ### Implementation tasks
 
-- [ ] Initialize a Python package using `pyproject.toml` and a `src/harness/` layout.
-- [ ] Set up a virtual environment, formatter/linter, and `pytest`.
-- [ ] Install or obtain a working `llama.cpp` / `llama-server` build for Apple Silicon.
-- [ ] Choose an initial small GGUF coding model and quantization based on actual memory behavior.
-- [ ] Run the model server with a deliberately bounded context window (8K is a candidate, not a hard requirement).
-- [ ] Write a minimal Python HTTP client that sends a chat request and prints the response.
-- [ ] Capture model errors, timeouts, response text, and token usage when available.
-- [ ] Document the tested model, server arguments, and observed memory behavior.
+- [x] Initialize a Python package using `pyproject.toml` and a `src/harness/` layout.
+- [x] Set up a virtual environment, formatter/linter, and `pytest`.
+- [x] Install or obtain a working `llama.cpp` / `llama-server` build for Apple Silicon.
+- [x] Choose an initial small GGUF coding model and quantization based on actual memory behavior.
+- [x] Run the model server with a deliberately bounded context window (8K is a candidate, not a hard requirement).
+- [x] Write a minimal Python HTTP client that sends a chat request and prints the response.
+- [x] Capture model errors, timeouts, response text, and token usage when available.
+- [x] Document the tested model, server arguments, and observed memory behavior.
 
 ### Tests
 
-- [ ] Mocked HTTP response is parsed correctly.
-- [ ] Connection refusal and timeout produce clear errors.
-- [ ] A real local smoke test receives a valid response.
+- [x] Mocked HTTP response is parsed correctly.
+- [x] Connection refusal and timeout produce clear errors.
+- [x] A real local smoke test receives a valid response.
 
 ### Deliverable
 
@@ -88,29 +88,30 @@ Build the smallest useful multi-step agent: it can inspect a repository and answ
 
 ### Implementation tasks
 
-- [ ] Define a minimal `AgentRun` state and terminal statuses.
-- [ ] Define a normalized model action format: `tool`, `complete`, and `invalid` initially; add `context_edit` in Phase 5 when the model-facing `update_context` tool is introduced.
-- [ ] Add `list_files` and bounded `read_file` tools.
-- [ ] Implement tool schema validation and workspace-root restrictions.
-- [ ] Implement the loop: assemble prompt → call model → parse action → execute tool → return result.
-- [ ] Add maximum model calls, maximum steps, timeouts, and cancellation checks.
-- [ ] Support model-declared completion with a clear distinction between claims and evidence.
-- [ ] Add a basic CLI command such as `harness run "Explain this module" --repo ./repo`.
-- [ ] Use a fake LLM adapter for deterministic loop tests.
+- [x] Define a minimal `AgentRun` state and terminal statuses.
+- [x] Define and strictly parse normalized `tool`, `complete`, and `invalid` actions; add `context_edit` in Phase 5 when the model-facing `update_context` tool is introduced.
+- [x] Add `list_files` and bounded `read_file` tools.
+- [x] Implement tool schema validation and workspace-root restrictions.
+- [x] Implement the read-only loop: assemble bounded prompt → call injected model → parse action → execute tool → record observation.
+- [x] Limit model calls and prompt bytes.
+- [x] Add maximum steps, timeouts, and cancellation checks.
+- [x] Support model-declared completion while distinguishing the model's proposal from verification evidence.
+- [x] Add a basic CLI command such as `harness run "Explain this module" --repo ./repo`.
+- [x] Use a fake model callable for deterministic loop tests.
 
 ### Tests
 
-- [ ] The agent reads two or more files without an additional user prompt.
-- [ ] Invalid tool names and malformed arguments are rejected.
-- [ ] Paths outside the workspace are rejected, including symlink escapes.
-- [ ] An endlessly requesting fake model stops at its configured limit.
-- [ ] Model timeouts and malformed responses do not crash the CLI.
+- [x] A deterministic runtime test reads two fixture files without an additional user prompt.
+- [x] Invalid tool names and malformed arguments are rejected (`tests/test_agent_runtime.py`).
+- [x] Paths outside the workspace are rejected, including symlink escapes (`tests/test_repository_tools.py`).
+- [x] An endlessly requesting fake model stops at its configured limit (`tests/test_agent_runtime.py`).
+- [x] Model timeouts and malformed responses produce concise CLI failure reports.
 
 ### Deliverable
 
 A **read-only local repository assistant** with a functioning bounded agent loop.
 
-**Done when:** The agent can answer a question about a small fixture repository by autonomously inspecting relevant files.
+**Done when:** The agent can answer a question about a small fixture repository by autonomously inspecting relevant files. Deterministic CLI/runtime integration is covered; a successful live smoke run on 2026-11-03 is recorded in [Local model setup](local-model.md). This is smoke evidence, not a correctness or reliability benchmark.
 
 **Avoid:** Building sophisticated state machines or abstractions before the simple loop is reliable.
 
@@ -122,24 +123,24 @@ Extend the read-only agent into a coding agent that can find code, make changes,
 
 ### Implementation tasks
 
-- [ ] Add a bounded `search_code` tool using ripgrep (basic lexical search only).
-- [ ] Add a safe patch-based `edit_file` tool with diff recording.
-- [ ] Add `run_tests` using explicitly permitted commands and subprocess timeouts.
-- [ ] Define an approval policy for risky or destructive operations.
-- [ ] Return structured tool results, including failed tests and patch conflicts.
-- [ ] Implement runtime verification using recorded test evidence **after the last relevant edit**; distinguish model completion proposals from runtime verification and independent benchmark resolution.
-- [ ] Report final diff, executed checks, unresolved issues, and terminal status.
-- [ ] Add no-progress detection for repeated identical actions.
-- [ ] Test clean-workspace preparation and isolation for fixture tasks.
+- [x] Add a bounded `search_code` tool using ripgrep (basic lexical search only).
+- [x] Add an authorized exact-text `edit_file` tool with hash preconditions, bounded diff recording, and atomic single-file replacement.
+- [x] Add `run_tests` using a fixed pytest command, configured workspace-relative targets, bounded output, and subprocess timeouts.
+- [x] Define separate edit/test approval modes (`AUTO`, `ASK`, `DENY`) with opt-in CLI approval and explicit `--auto-approve` grants.
+- [x] Return structured tool results, including failed tests, conflicts, timeout, cancellation, and uncertain edit write states.
+- [x] Implement runtime verification using recorded test evidence **after the last relevant edit**; distinguish model completion proposals from runtime verification and independent benchmark resolution.
+- [x] Report final diff, executed checks, unresolved issues, and terminal status.
+- [x] Add no-progress detection for repeated identical actions.
+- [x] Test clean-workspace preparation and isolation for fixture tasks.
 
 ### Tests
 
-- [ ] Agent fixes a deliberately broken function in a small repository.
-- [ ] Agent runs a targeted test after editing.
-- [ ] A failed test can lead to another edit and a successful retry.
-- [ ] A model's unsupported claim that tests passed is rejected.
-- [ ] Dangerous commands and out-of-workspace edits are denied.
-- [ ] Timeouts and partial edits are clearly reported.
+- [x] Agent fixes a deliberately broken function in a small repository.
+- [x] Agent runs a targeted test after editing in deterministic runtime coverage.
+- [x] A failed test can lead to another edit and a successful retry.
+- [x] A model's unsupported claim that tests passed is rejected.
+- [x] Arbitrary commands and out-of-workspace edits are denied.
+- [x] Test timeout and partial tool output are bounded and reported; edit replacement uncertainty is audited.
 
 ### Deliverable
 
@@ -157,23 +158,23 @@ Create a measurable baseline **before** introducing retrieval or memory optimiza
 
 ### Implementation tasks
 
-- [ ] Define structured run/step events and stable outcome labels.
-- [ ] Record model calls, input/output tokens, tool calls, context size, wall time, and verification results.
-- [ ] Add SQLite for structured traces and metrics where useful; keep the runtime independent of its persistence backend.
-- [ ] Save run-specific patches, logs, and configuration metadata.
-- [ ] Build a fixture-based evaluation runner with clean checkout and separate evaluation workspace.
-- [ ] Establish a documented macOS memory measurement procedure.
-- [ ] Select five feasible real benchmark tasks for smoke testing; document selection and exclusions.
-- [ ] Separate development tasks from future held-out tasks.
-- [ ] Run the baseline repeatedly to confirm the runner produces interpretable results.
+- [x] Define structured run/step events and stable outcome labels.
+- [x] Record model calls, input/output tokens, tool calls, context size, wall time, and verification results.
+- [x] Add SQLite for structured traces and metrics where useful; keep the runtime independent of its persistence backend.
+- [x] Save run-specific patches, logs, and configuration metadata.
+- [x] Build a fixture-based evaluation runner with clean checkout and separate evaluation workspace.
+- [x] Establish a documented macOS memory measurement procedure.
+- [x] Select five feasible real benchmark tasks for smoke testing; document selection and exclusions.
+- [x] Separate development tasks from future held-out tasks.
+- [x] Run the baseline repeatedly to confirm the runner produces interpretable results.
 
 ### Tests
 
-- [ ] Each run has a unique ID and complete terminal outcome.
-- [ ] Model/tool failures are recorded rather than silently discarded.
-- [ ] A candidate patch is evaluated against a clean task snapshot.
-- [ ] Setup failures are distinguished from unresolved coding tasks.
-- [ ] Re-running the same fixture does not reuse prior edits or working memory.
+- [x] Each run has a unique ID and complete terminal outcome.
+- [x] Model/tool failures are recorded rather than silently discarded.
+- [x] A candidate patch is evaluated against a clean task snapshot.
+- [x] Setup failures are distinguished from unresolved coding tasks.
+- [x] Re-running the same fixture does not reuse prior edits or working memory.
 
 ### Deliverable
 
@@ -191,25 +192,25 @@ Test whether model-initiated editing of compact working notes improves coding su
 
 ### Implementation tasks
 
-- [ ] Extract the existing bounded-history prompt builder behind a small context-strategy interface.
-- [ ] Implement run-scoped Markdown storage for `working.md`, `task.md`, and optional `findings/`.
-- [ ] Keep original task and harness instructions immutable.
-- [ ] Add the model-facing `update_context` tool, normalized by the LLM adapter to the runtime's `context_edit` action, with validated `replace` and `append` operations.
-- [ ] Add bounded `read_memory` for selective findings retrieval when needed; defer a separate `save_memory` tool.
-- [ ] Use atomic writes and record accepted/rejected context edits.
-- [ ] Add model-compatible token counting and deterministic overflow handling.
-- [ ] Selectively assemble working notes, recent results, and relevant findings.
-- [ ] Log proactive context edits separately from fallback pruning.
-- [ ] Compare the editable-context strategy with the same baseline on development tasks.
+- [x] Extract the existing bounded-history prompt builder behind a small context-strategy interface.
+- [x] Implement run-scoped Markdown storage for `working.md`, `task.md`, and optional `findings/`.
+- [x] Keep original task and harness instructions immutable.
+- [x] Add the model-facing `update_context` tool, normalized by the LLM adapter to the runtime's `context_edit` action, with validated `replace` and `append` operations.
+- [x] Add bounded `read_memory` for selective findings retrieval when needed; defer a separate `save_memory` tool.
+- [x] Use atomic writes and record accepted/rejected context edits.
+- [x] Add model-compatible token counting and deterministic overflow handling.
+- [x] Selectively assemble working notes, recent results, and relevant findings.
+- [x] Log proactive context edits separately from fallback pruning.
+- [x] Compare the editable-context strategy with the same baseline on development tasks.
 
 ### Tests
 
-- [ ] Model can replace a disproven hypothesis with a confirmed finding.
-- [ ] Updated notes appear in a later prompt.
-- [ ] Immutable task/instructions cannot be modified through memory tools.
-- [ ] Oversized or out-of-scope edits are rejected.
-- [ ] Context never exceeds the configured input budget.
-- [ ] Run-specific notes do not leak into another task.
+- [x] Model can replace a disproven hypothesis with a confirmed finding.
+- [x] Updated notes appear in a later prompt.
+- [x] Immutable task/instructions cannot be modified through memory tools.
+- [x] Oversized or out-of-scope edits are rejected.
+- [x] Context never exceeds the configured input budget.
+- [x] Run-specific notes do not leak into another task.
 
 ### Deliverable
 
@@ -227,25 +228,25 @@ Give the agent better code discovery without requiring it to read large parts of
 
 ### Implementation tasks
 
-- [ ] Reuse and harden the Phase 3 ripgrep adapter.
-- [ ] Add Tree-sitter parsing for Python source files first.
-- [ ] Extract functions, classes, methods, imports, and source ranges.
-- [ ] Build a compact repository map of symbol names and locations.
-- [ ] Add deterministic candidate ranking and bounded snippet formatting behind the existing `search_code` / `read_file` interfaces; defer extra model-facing symbol tools.
-- [ ] Invalidate affected index entries after edits or external file changes.
-- [ ] Handle unsupported languages and parser failures by falling back to lexical search.
-- [ ] Integrate snippet selection with the global context budget.
-- [ ] Keep retrieval independently switchable from editable context.
-- [ ] Compare lexical-only and code-aware retrieval on development tasks.
+- [x] Reuse and harden the Phase 3 ripgrep adapter.
+- [x] Add Tree-sitter parsing for Python source files first.
+- [x] Extract functions, classes, methods, imports, and source ranges.
+- [x] Build a compact repository map of symbol names and locations.
+- [x] Add deterministic candidate ranking and bounded snippet formatting behind the existing `search_code` / `read_file` interfaces; defer extra model-facing symbol tools.
+- [x] Invalidate affected index entries after edits or external file changes.
+- [x] Handle unsupported languages and parser failures by falling back to lexical search.
+- [x] Integrate snippet selection with the global context budget.
+- [x] Keep retrieval independently switchable from editable context.
+- [x] Compare lexical-only and code-aware retrieval on development tasks.
 
 ### Tests
 
-- [ ] Definitions rank above incidental mentions in a controlled fixture.
-- [ ] Symbol locations and snippet line numbers are correct.
-- [ ] Index updates after edits, renames, and deletions.
-- [ ] Large/ignored/generated files are handled within limits.
-- [ ] Parsing failures do not prevent basic file search.
-- [ ] The agent can locate a relevant symbol in a multi-file fixture.
+- [x] Definitions rank above incidental mentions in a controlled fixture.
+- [x] Symbol locations and snippet line numbers are correct.
+- [x] Index updates after edits, renames, and deletions.
+- [x] Large/ignored/generated files are handled within limits.
+- [x] Parsing failures do not prevent basic file search.
+- [x] The agent can locate a relevant symbol in a multi-file fixture.
 
 ### Deliverable
 
@@ -263,25 +264,25 @@ Evaluate whether our techniques improve coding-task resolution and resource effi
 
 ### Implementation tasks
 
-- [ ] Run four internal conditions: baseline, retrieval-only, CLM-only, combined.
-- [ ] Pin the same model, quantization, context capacity, task set, and evaluation oracle.
-- [ ] Start with an 8K context capacity; evaluate 16K only if stable and feasible.
-- [ ] Add mini-SWE-agent as an external comparison using the same local model and selected tasks.
-- [ ] Document differences in prompts, tools, permissions, and execution policies.
+- [x] Run four internal conditions: baseline, retrieval-only, CLM-only, combined.
+- [x] Pin the same model, quantization, context capacity, task set, and evaluation oracle.
+- [x] Start with an 8K context capacity; evaluate 16K only if stable and feasible.
+- [x] Add mini-SWE-agent as an external comparison using the same local model and selected tasks.
+- [x] Document differences in prompts, tools, permissions, and execution policies.
 - [ ] Expand from five smoke tasks to a proposed 20-task evaluation and potentially 50 tasks.
 - [ ] Use separate held-out tasks for reported results.
-- [ ] Record task resolution, peak memory, tokens, calls, wall time, and failure reasons.
-- [ ] Repeat trials where feasible and report uncertainty and per-task regressions.
+- [x] Record task resolution, peak memory, tokens, calls, wall time, and failure reasons.
+- [x] Repeat trials where feasible and report uncertainty and per-task regressions.
 - [ ] Validate selected patches with an official-compatible evaluator if practical.
-- [ ] Publish a reproducible report with negative results and limitations.
+- [x] Publish a reproducible report with negative results and limitations.
 
 ### Tests
 
-- [ ] Each condition starts from the same repository snapshot.
-- [ ] Evaluation patches cannot access reference solutions.
-- [ ] Task manifests and results contain enough metadata to reproduce runs.
-- [ ] Locally validated results are not mislabeled as official benchmark scores.
-- [ ] Metrics are collected consistently across conditions.
+- [x] Each condition starts from the same repository snapshot.
+- [x] Evaluation patches cannot access reference solutions.
+- [x] Task manifests and results contain enough metadata to reproduce runs.
+- [x] Locally validated results are not mislabeled as official benchmark scores.
+- [x] Metrics are collected consistently across conditions.
 
 ### Deliverable
 

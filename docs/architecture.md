@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** Proposed design — not yet implemented.  
+> **Status:** Implemented (Phases 1–7, local stdlib Web UI `harness ui`, graduated loop intervention, and PR #85 ergonomics). See [`code-map.md`](code-map.md) for current implemented modules and contracts.  
 > **Target:** 16 GB Apple Silicon MacBook Air; local-first, CLI-first coding agent.
 
 ## 1. Purpose and design goals
@@ -37,7 +37,7 @@ Efficient Code Agent is a Python coding-agent harness that orchestrates a small,
 | Run tracing and evaluation | SQLite | Supporting execution logs, metrics, experiment metadata |
 | Tests | pytest | Harness tests and evaluation infrastructure |
 
-FastAPI and React are optional future interfaces. They are **not** required for the initial CLI implementation.
+A zero-dependency localhost Web UI (`harness ui`) is now implemented in [`src/harness/ui/`](../src/harness/ui/server.py); heavier frameworks like FastAPI and React remain unnecessary.
 
 ## 3. High-level component architecture
 

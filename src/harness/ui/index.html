@@ -1,0 +1,2215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Efficient Code Agent</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --panel: #161d24;
+      --panel-2: #1c252e;
+      --border: #28323d;
+      --text: #e6edf3;
+      --muted: #8b98a5;
+      --accent: #3b82f6;
+      --user-bg: #1e3a5f;
+      --green: #22c55e;
+      --red: #ef4444;
+      --amber: #f59e0b;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+    * {
+      box-sizing: border-box;
+      scrollbar-width: none;
+      -ms-overflow-style: none;
+    }
+    *::-webkit-scrollbar { display: none; }
+    body.resizing { user-select: none; cursor: col-resize; }
+    body {
+      margin: 0;
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .brand { font-weight: 700; font-size: 15px; display: flex; align-items: center; gap: 10px; }
+    .sessions-dropdown { position: relative; }
+    .sessions-menu {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      width: 310px;
+      max-width: 90vw;
+      max-height: 75vh;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+      padding: 10px 8px;
+      z-index: 40;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .sessions-menu.open { display: flex; }
+    .sessions-menu-header {
+      display: flex;
+      align-items: center;
+    }
+    .sessions-menu-header #newChatBtn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 13px;
+      font-weight: 500;
+      text-align: left;
+    }
+    .sessions-menu-header #newChatBtn:hover {
+      background: #222d3a;
+      border-color: var(--accent);
+      filter: none;
+    }
+    .sessions-menu-header #newChatBtn svg {
+      width: 14px;
+      height: 14px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .sessions-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      overflow-y: auto;
+      min-height: 0;
+    }
+    .sessions-section-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 8px 4px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.02em;
+    }
+    .sessions-section-hdr:first-child { padding-top: 2px; }
+    .sessions-project-hdr {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 8px 3px;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--muted);
+    }
+    .sessions-project-hdr svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      opacity: 0.85;
+    }
+    .sessions-project-name {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .sessions-mini-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      border-radius: 5px;
+      width: 20px;
+      height: 20px;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .sessions-mini-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      filter: none;
+    }
+    .sessions-empty {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 12px 8px;
+      text-align: center;
+    }
+    .hdr-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .health {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 12px;
+      font-weight: 500;
+      height: 30px;
+      padding: 0 11px;
+      border-radius: 999px;
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      cursor: pointer;
+    }
+    .health:hover { border-color: var(--accent); filter: none; }
+    header button.secondary {
+      height: 30px;
+      padding: 0 11px;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border: 1px solid var(--border);
+    }
+    header button.icon-btn {
+      width: 30px;
+      padding: 0;
+      justify-content: center;
+    }
+    header button.icon-btn svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+    }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .dot.ok { background: var(--green); }
+    .dot.err { background: var(--red); }
+    @keyframes pulseDot {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.35; transform: scale(0.8); }
+    }
+    .status-live {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+    }
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: pulseDot 1.2s ease-in-out infinite;
+      flex-shrink: 0;
+    }
+    .pulse-dot.amber { background: var(--amber); }
+    .ctx-meter {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-family: var(--mono);
+      color: var(--muted);
+    }
+    .ctx-track {
+      width: 110px;
+      height: 7px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+    .ctx-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--accent);
+      transition: width 0.2s ease, background-color 0.2s ease;
+    }
+    .offline-hint {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--amber);
+      background: #231d12;
+      border: 1px solid #4d3b14;
+      padding: 4px 8px;
+      border-radius: 6px;
+      display: none;
+    }
+    button {
+      border: 0;
+      border-radius: 6px;
+      padding: 7px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      background: var(--accent);
+      color: #fff;
+      transition: background-color 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+    }
+    button:hover:not(:disabled) { filter: brightness(1.08); }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    button.secondary { background: #222c37; color: var(--text); }
+    button.secondary:hover:not(:disabled) { background: #2c3846; filter: none; }
+    button.danger { background: var(--red); }
+    button.success { background: var(--green); color: #08120c; }
+    .workspace {
+      flex: 1;
+      display: flex;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .chat-pane {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+    }
+    .thread {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      max-width: 900px;
+      width: 100%;
+      margin: 0 auto;
+    }
+    .empty-state {
+      margin: auto;
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 14px;
+      max-width: 520px;
+    }
+    .setup-card {
+      display: none;
+      width: 100%;
+      text-align: left;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 14px 16px;
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--text);
+      flex-direction: column;
+      gap: 10px;
+    }
+    .setup-card.visible { display: flex; }
+    .setup-card-title { font-weight: 600; font-size: 13px; color: var(--amber); }
+    .setup-cmd {
+      font-family: var(--mono);
+      font-size: 11.5px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 8px;
+      color: #cbd5e1;
+      overflow-x: auto;
+      white-space: nowrap;
+    }
+    .preset-row {
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+    }
+    .preset-btn {
+      background: var(--bg);
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 3px 8px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .preset-btn:hover { border-color: var(--accent); color: var(--text); filter: none; }
+    .server-url-row { display: flex; gap: 6px; }
+    .server-url-row input { flex: 1; }
+    .server-status { font-size: 11.5px; color: var(--muted); min-height: 16px; }
+    .server-status.ok { color: var(--green); }
+    .server-status.err { color: var(--red); }
+    .modal-divider { border: 0; border-top: 1px solid var(--border); margin: 2px 0; }
+    .msg {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-width: 85%;
+    }
+    .msg.user { align-self: flex-end; }
+    .msg.assistant { align-self: flex-start; width: 100%; max-width: 92%; }
+    .bubble {
+      padding: 10px 14px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .msg.user .bubble { background: var(--user-bg); border: 1px solid #2c5282; }
+    .msg.assistant .bubble { background: var(--panel); border: 1px solid var(--border); }
+    .msg.assistant .bubble.md { white-space: normal; }
+    .md-p { margin: 0 0 8px; }
+    .md-p:last-child { margin-bottom: 0; }
+    .md-h { margin: 10px 0 6px; font-weight: 700; line-height: 1.3; }
+    .md-h:first-child { margin-top: 0; }
+    .md-h1 { font-size: 16px; }
+    .md-h2 { font-size: 15px; }
+    .md-h3 { font-size: 14px; color: #cbd5e1; }
+    .md-list { margin: 0 0 8px; padding-left: 20px; }
+    .md-list:last-child { margin-bottom: 0; }
+    .md-list li { margin: 3px 0; }
+    .md-inline-code {
+      font-family: var(--mono);
+      font-size: 12px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+    }
+    .md-code-block {
+      margin: 8px 0;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .md-code-block:last-child { margin-bottom: 0; }
+    .md-code-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 4px 10px;
+      background: var(--panel-2);
+      border-bottom: 1px solid var(--border);
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .md-copy-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+    .md-copy-btn:hover { color: var(--text); border-color: var(--accent); background: #1e2936; }
+    .md-code-pre {
+      margin: 0;
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      font-family: var(--mono);
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre;
+      overflow-x: auto;
+      flex: none;
+    }
+    .msg-meta {
+      font-size: 11px;
+      color: var(--muted);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    details.tools {
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+    details.tools summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 600;
+      user-select: none;
+    }
+    .tool-list {
+      margin-top: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    details.tool-pill {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    details.tool-pill summary {
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 5px 8px;
+      cursor: pointer;
+      font-weight: 500;
+      color: var(--text);
+    }
+    details.tool-pill summary::-webkit-details-marker { display: none; }
+    details.tool-pill summary:hover { background: #141c24; }
+    .tool-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+    .tool-dot.ok { background: var(--green); }
+    .tool-dot.err { background: var(--red); }
+    .tool-dot.warn { background: var(--amber); }
+    .tool-badge {
+      background: #1f2a36;
+      color: #cbd5e1;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 5px;
+      font-size: 10px;
+      flex-shrink: 0;
+    }
+    .tool-target {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+    }
+    .tool-seq {
+      color: #64748b;
+      font-size: 10px;
+      flex-shrink: 0;
+    }
+    .tool-json {
+      margin: 0;
+      padding: 7px 9px;
+      border: 0;
+      border-top: 1px solid var(--border);
+      border-radius: 0;
+      font-size: 11px;
+      color: var(--muted);
+      max-height: 220px;
+      overflow: auto;
+      flex: none;
+    }
+    .approval-card {
+      background: #241e11;
+      border: 1px solid #6b5119;
+      border-radius: 10px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin: 0 auto 8px;
+      max-width: 900px;
+      width: calc(100% - 40px);
+    }
+    .composer-wrap {
+      padding: 10px 16px 28px;
+      background: var(--bg);
+    }
+    .composer {
+      max-width: 900px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .composer-box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 10px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .composer-box:focus-within {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.22);
+    }
+    .composer-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      min-height: 16px;
+      padding: 0 4px;
+    }
+    .settings-caption {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      opacity: 0.78;
+    }
+    .composer-box textarea {
+      width: 100%;
+      background: transparent;
+      color: var(--text);
+      border: 0;
+      outline: none;
+      padding: 2px 4px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      min-height: 44px;
+      max-height: 150px;
+    }
+    .composer-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-top: 2px;
+    }
+    .composer-left {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+      font-size: 12.5px;
+      color: var(--muted);
+    }
+    .mode-select-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+    .mode-select-wrap select {
+      appearance: none;
+      -webkit-appearance: none;
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      outline: none;
+      border-radius: 8px;
+      padding: 5px 22px 5px 8px;
+      font-size: 12.5px;
+      font-weight: 500;
+      font-family: inherit;
+      cursor: pointer;
+      transition: background-color 0.14s ease, color 0.14s ease;
+    }
+    .mode-select-wrap select:hover,
+    .mode-select-wrap select:focus {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+    }
+    .mode-select-wrap select option {
+      background: var(--panel);
+      color: var(--text);
+    }
+    .mode-chevron {
+      position: absolute;
+      right: 6px;
+      width: 13px;
+      height: 13px;
+      color: var(--muted);
+      pointer-events: none;
+    }
+    .mode-select-wrap:hover .mode-chevron { color: var(--text); }
+    .repo-picker {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .ghost-btn {
+      background: transparent;
+      color: var(--muted);
+      border: 0;
+      border-radius: 8px;
+      padding: 5px 8px;
+      font-size: 12.5px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .ghost-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+      filter: none;
+    }
+    .ghost-btn.has-repo { color: var(--text); }
+    .repo-btn-label {
+      max-width: 180px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .ghost-btn svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      display: block;
+    }
+    .clear-repo-btn {
+      padding: 4px 6px;
+      font-size: 13px;
+      line-height: 1;
+    }
+    .send-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      padding: 0;
+      border-radius: 999px;
+    }
+    .send-btn svg {
+      width: 16px;
+      height: 16px;
+      display: block;
+    }
+    .inspector-resizer {
+      width: 6px;
+      margin-left: -3px;
+      margin-right: -3px;
+      cursor: col-resize;
+      background: transparent;
+      flex-shrink: 0;
+      position: relative;
+      z-index: 10;
+    }
+    .inspector-resizer::after {
+      content: "";
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 2px;
+      width: 2px;
+      background: transparent;
+      transition: background-color 0.12s ease;
+    }
+    .inspector-resizer:hover::after,
+    .inspector-resizer.dragging::after { background: var(--accent); }
+    .inspector-resizer.hidden { display: none; }
+    .inspector {
+      width: 420px;
+      border-left: 1px solid var(--border);
+      background: var(--panel);
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      flex-shrink: 0;
+      transition: width 0.15s ease;
+    }
+    .inspector.resizing { transition: none; }
+    .inspector.collapsed { width: 42px !important; }
+    .inspector.collapsed .tab-btn,
+    .inspector.collapsed .tab-pane { display: none !important; }
+    .inspector.collapsed .tabs { border-bottom: 0; justify-content: center; padding: 10px 4px; }
+    .arrow-btn {
+      background: transparent;
+      color: var(--muted);
+      padding: 4px 8px;
+      font-size: 13px;
+      border-radius: 6px;
+    }
+    .arrow-btn:hover { background: #26313d; color: var(--text); }
+    .tabs { display: flex; gap: 6px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+    .tab-btn { background: transparent; color: var(--muted); padding: 5px 10px; font-size: 12px; }
+    .tab-btn.active { background: #26313d; color: var(--text); }
+    .tab-pane { display: none; flex: 1; min-height: 0; padding: 10px 12px; flex-direction: column; gap: 8px; overflow-y: auto; }
+    .tab-pane.active { display: flex; }
+    pre {
+      margin: 0;
+      font-family: var(--mono);
+      font-size: 12px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      flex: 1;
+      overflow-y: auto;
+    }
+    .md-pane {
+      margin: 0;
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.5;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 12px 14px;
+      flex: 1;
+      overflow-y: auto;
+      word-break: break-word;
+    }
+    .md-pane-empty {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 12px;
+    }
+    #diffBox { padding: 8px 0; white-space: pre; overflow: auto; }
+    .diff-line {
+      display: block;
+      padding: 1px 10px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .diff-add { background: rgba(34, 197, 94, 0.14); color: #86efac; }
+    .diff-del { background: rgba(239, 68, 68, 0.15); color: #fca5a5; }
+    .diff-hunk { background: rgba(59, 130, 246, 0.14); color: #93c5fd; font-weight: 600; }
+    .diff-meta { color: var(--muted); font-weight: 600; }
+    .diff-empty { display: block; padding: 2px 10px; color: var(--muted); }
+    .hist-item {
+      background: transparent;
+      border: 0;
+      border-radius: 7px;
+      padding: 6px 8px;
+      cursor: pointer;
+      font-size: 12.5px;
+      font-weight: 400;
+      color: #c9d4df;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      transition: background-color 0.12s ease, color 0.12s ease;
+    }
+    .hist-item.in-project { padding-left: 26px; }
+    .hist-item:hover { background: rgba(255, 255, 255, 0.05); color: var(--text); }
+    .hist-item.active { background: #213042; color: #fff; font-weight: 500; }
+    .hist-item-label {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      flex: 1;
+    }
+    .hist-item-time {
+      color: var(--muted);
+      font-size: 11px;
+      flex-shrink: 0;
+    }
+    .hist-item-del {
+      display: none;
+    }
+    .hist-item:hover .hist-item-time { display: none; }
+    .hist-item:hover .hist-item-del { display: inline-flex; }
+    .mem-tree {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      font-family: var(--mono);
+      font-size: 12px;
+      max-height: 170px;
+      overflow-y: auto;
+    }
+    .mem-folder { color: var(--muted); padding: 3px 6px; font-size: 11px; }
+    .mem-item {
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .mem-item.indent { padding-left: 20px; }
+    .mem-item:hover { background: #1e2631; }
+    .mem-item.active { background: #26313d; color: var(--accent); font-weight: 600; }
+    .modal-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.65);
+      align-items: center;
+      justify-content: center;
+      z-index: 50;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px;
+      width: 480px;
+      max-width: 92vw;
+      max-height: 90vh;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .modal h2 { margin: 0; font-size: 16px; }
+    .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+    .field input, .field select {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 9px;
+      font-size: 13px;
+    }
+    .field.disabled label { opacity: 0.45; }
+    .field input:disabled {
+      opacity: 0.45;
+      background: var(--panel-2);
+      color: var(--muted);
+      cursor: not-allowed;
+    }
+    .field input:disabled::placeholder {
+      color: var(--muted);
+      opacity: 1;
+    }
+    .field-help {
+      margin-top: 5px;
+      font-size: 11px;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+    @media (max-width: 960px) {
+      .inspector { width: 320px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span>Efficient Code Agent</span>
+      <div class="sessions-dropdown" id="sessionsDropdown">
+        <button id="sessionsBtn" class="secondary" type="button" aria-haspopup="true" aria-expanded="false">Sessions &#9662;</button>
+        <div id="sessionsMenu" class="sessions-menu" role="menu">
+          <div class="sessions-menu-header">
+            <button id="newChatBtn" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="12" y1="5" x2="12" y2="19"></line>
+                <line x1="5" y1="12" x2="19" y2="12"></line>
+              </svg>
+              <span>New Chat</span>
+            </button>
+          </div>
+          <div id="historyList" class="sessions-list"></div>
+        </div>
+      </div>
+    </div>
+    <div class="ctx-meter" title="Latest model call prompt tokens vs context window">
+      <span id="ctxLabel">Context: 0 / 8,192 (0%)</span>
+      <div class="ctx-track"><div id="ctxFill" class="ctx-fill"></div></div>
+    </div>
+    <div class="hdr-right">
+      <button id="healthBtn" class="health" type="button" title="Click to configure local model server">
+        <span class="dot" id="healthDot"></span>
+        <span id="healthText">Checking server...</span>
+      </button>
+      <button id="settingsBtn" class="secondary icon-btn" type="button" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="workspace">
+    <section class="chat-pane">
+      <div id="thread" class="thread">
+        <div class="empty-state" id="emptyState">
+          <div>Send a message to inspect or fix code in your repository.</div>
+          <div id="setupCard" class="setup-card">
+            <div class="setup-card-title">No local model server detected</div>
+            <div style="color:var(--muted);">Start any OpenAI-compatible local server, then pick a preset in Settings:</div>
+            <div class="setup-cmd">llama-server -m /path/to/model.gguf --port 8080 -c 8192</div>
+            <div class="setup-cmd">ollama serve  # http://127.0.0.1:11434</div>
+            <div style="display:flex;justify-content:flex-end;">
+              <button id="openSetupSettingsBtn" class="secondary" type="button" style="font-size:12px;padding:5px 10px;">Configure Server</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="approvalBox" class="approval-card" style="display:none;">
+        <div style="font-weight:600;font-size:13px;color:var(--amber);">Approval Required</div>
+        <div id="approvalText" style="font-family:var(--mono);font-size:12px;"></div>
+        <div style="display:flex;gap:8px;">
+          <button id="approveBtn" class="success">Approve</button>
+          <button id="denyBtn" class="danger">Deny</button>
+        </div>
+      </div>
+
+      <div class="composer-wrap">
+        <div class="composer">
+          <div class="composer-box">
+            <textarea id="taskInput" placeholder="Ask a question or describe a fix... (Enter to send, Shift+Enter for newline)"></textarea>
+            <div class="composer-bar">
+              <div class="composer-left">
+                <span class="mode-select-wrap">
+                  <select id="modeSelect" title="Execution & approval mode">
+                    <option value="read_only" id="readOnlyOpt">Chat only</option>
+                    <option value="coding_ask" selected>Coding (Ask)</option>
+                    <option value="coding_auto">Coding (Auto)</option>
+                  </select>
+                  <svg class="mode-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="6 9 12 15 18 9"></polyline>
+                  </svg>
+                </span>
+                <span class="repo-picker">
+                  <button id="browseRepoBtn" class="ghost-btn" type="button" title="Browse for a repository folder">
+                    <span id="repoBtnLabel" class="repo-btn-label">Repo</span>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+                    </svg>
+                  </button>
+                  <button id="clearRepoBtn" class="ghost-btn clear-repo-btn" type="button" title="Detach repo (chat only)" aria-label="Detach repo" style="display:none;">&#215;</button>
+                </span>
+              </div>
+              <div>
+                <button id="sendBtn" class="send-btn" type="button" title="Send message" aria-label="Send message">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <line x1="12" y1="19" x2="12" y2="5"></line>
+                    <polyline points="5 12 12 5 19 12"></polyline>
+                  </svg>
+                </button>
+                <button id="stopBtn" class="danger send-btn" type="button" title="Stop run" aria-label="Stop run" style="display:none;">
+                  <svg viewBox="0 0 24 24" aria-hidden="true">
+                    <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"></rect>
+                  </svg>
+                </button>
+              </div>
+            </div>
+          </div>
+          <div class="composer-footer">
+            <span id="activeSettingsSummary" class="settings-caption"></span>
+            <div id="runError" style="color:var(--red);font-size:12px;"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div id="inspectorResizer" class="inspector-resizer" title="Drag to resize panel"></div>
+    <aside id="inspector" class="inspector">
+      <div class="tabs">
+        <button id="inspectorToggleBtn" class="arrow-btn" title="Collapse / expand panel">&#9654;</button>
+        <button class="tab-btn active" data-tab="notesPane">Working Notes</button>
+        <button class="tab-btn" data-tab="findingsPane">Findings</button>
+        <button class="tab-btn" data-tab="diffPane">Diff</button>
+      </div>
+      <div id="notesPane" class="tab-pane active">
+        <div id="notesBox" class="md-pane"><span class="md-pane-empty">(no working.md notes yet)</span></div>
+      </div>
+      <div id="findingsPane" class="tab-pane">
+        <div id="findingsTree" class="mem-tree"></div>
+        <div id="findingBox" class="md-pane"><span class="md-pane-empty">(no findings yet)</span></div>
+      </div>
+      <div id="diffPane" class="tab-pane">
+        <pre id="diffBox">(no candidate diff)</pre>
+      </div>
+    </aside>
+  </div>
+
+  <div id="settingsModal" class="modal-backdrop">
+    <div class="modal">
+      <h2>Agent Settings</h2>
+      <div class="field">
+        <label for="serverUrlInput">Local Model Server (localhost only)</label>
+        <div class="preset-row">
+          <button type="button" class="preset-btn" data-preset-url="http://127.0.0.1:8080">llama.cpp (:8080)</button>
+          <button type="button" class="preset-btn" data-preset-url="http://127.0.0.1:11434">Ollama (:11434)</button>
+          <button type="button" class="preset-btn" data-preset-url="http://127.0.0.1:1234">LM Studio (:1234)</button>
+        </div>
+        <div class="server-url-row">
+          <input id="serverUrlInput" type="text" placeholder="http://127.0.0.1:8080">
+          <button id="saveServerBtn" class="secondary" type="button" style="white-space:nowrap;">Test &amp; Save</button>
+        </div>
+      </div>
+      <div class="field">
+        <label for="serverModelSelect">Model</label>
+        <select id="serverModelSelect">
+          <option value="">Auto-detect from server</option>
+        </select>
+        <div id="serverConfigStatus" class="server-status"></div>
+      </div>
+      <hr class="modal-divider">
+      <div class="grid2">
+        <div class="field">
+          <label for="strategySelect">Context Strategy</label>
+          <select id="strategySelect">
+            <option value="bounded_history">bounded_history (baseline)</option>
+            <option value="editable_context" selected>editable_context (notes)</option>
+          </select>
+          <div id="strategyHelp" class="field-help"></div>
+        </div>
+        <div class="field">
+          <label for="retrievalSelect">Retrieval Mode</label>
+          <select id="retrievalSelect">
+            <option value="lexical_only">lexical_only (ripgrep)</option>
+            <option value="code_aware" selected>code_aware (Tree-sitter)</option>
+          </select>
+          <div id="retrievalHelp" class="field-help"></div>
+        </div>
+      </div>
+      <div class="field">
+        <label for="ctxInput">Context Window (tokens)</label>
+        <input id="ctxInput" type="number" value="8192" min="512">
+      </div>
+      <div class="field">
+        <label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer;color:var(--text);">
+          <input id="unlimitedCheck" type="checkbox" style="width:auto;"> Unlimited calls &amp; steps (bounded only by Stop / no-progress)
+        </label>
+      </div>
+      <div class="grid3">
+        <div class="field">
+          <label for="maxCallsInput">Max Calls</label>
+          <input id="maxCallsInput" type="number" value="30" min="1">
+        </div>
+        <div class="field">
+          <label for="maxStepsInput">Max Steps</label>
+          <input id="maxStepsInput" type="number" value="30" min="1">
+        </div>
+        <div class="field">
+          <label for="maxInvalidInput">Max Invalid</label>
+          <input id="maxInvalidInput" type="number" value="6" min="1">
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;">
+        <button id="closeSettingsBtn" class="secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let sessionId = crypto.randomUUID ? crypto.randomUUID().slice(0, 12) : String(Date.now());
+    let currentRunId = null;
+    let pollTimer = null;
+    const turns = new Map();
+
+    async function api(path, options = {}) {
+      const resp = await fetch(path, {
+        headers: { "Content-Type": "application/json" },
+        ...options,
+      });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || `HTTP ${resp.status}`);
+      return data;
+    }
+
+    const PREFS_KEY = "eca_ui_prefs_v1";
+    let inspectorWidth = 420;
+    let savedMaxCalls = "30";
+    let savedMaxSteps = "30";
+
+    function clampInspectorWidth(width) {
+      const minW = 220;
+      const maxW = Math.max(minW, Math.min(window.innerWidth - 320, Math.round(window.innerWidth * 0.75)));
+      return Math.max(minW, Math.min(maxW, Math.round(width)));
+    }
+
+    function applyInspectorWidth(width) {
+      inspectorWidth = clampInspectorWidth(width);
+      document.getElementById("inspector").style.width = `${inspectorWidth}px`;
+    }
+
+    function syncInspectorResizer() {
+      const collapsed = document.getElementById("inspector").classList.contains("collapsed");
+      document.getElementById("inspectorResizer").classList.toggle("hidden", collapsed);
+    }
+
+    function savePreferences() {
+      try {
+        const prefs = {
+          strategy: document.getElementById("strategySelect").value,
+          retrieval: document.getElementById("retrievalSelect").value,
+          ctx: document.getElementById("ctxInput").value,
+          unlimited: document.getElementById("unlimitedCheck").checked,
+          maxCalls: document.getElementById("maxCallsInput").value || savedMaxCalls,
+          maxSteps: document.getElementById("maxStepsInput").value || savedMaxSteps,
+          maxInvalid: document.getElementById("maxInvalidInput").value,
+          mode: document.getElementById("modeSelect").value,
+          inspectorCollapsed: document.getElementById("inspector").classList.contains("collapsed"),
+          inspectorWidth,
+        };
+        localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+      } catch (_) {}
+    }
+
+    function loadPreferences() {
+      try {
+        const raw = localStorage.getItem(PREFS_KEY);
+        if (!raw) return;
+        const p = JSON.parse(raw);
+        if (p.strategy) document.getElementById("strategySelect").value = p.strategy;
+        if (p.retrieval) document.getElementById("retrievalSelect").value = p.retrieval;
+        if (p.ctx) document.getElementById("ctxInput").value = p.ctx;
+        if (typeof p.unlimited === "boolean") document.getElementById("unlimitedCheck").checked = p.unlimited;
+        if (p.maxCalls) {
+          savedMaxCalls = String(p.maxCalls);
+          document.getElementById("maxCallsInput").value = savedMaxCalls;
+        }
+        if (p.maxSteps) {
+          savedMaxSteps = String(p.maxSteps);
+          document.getElementById("maxStepsInput").value = savedMaxSteps;
+        }
+        if (p.maxInvalid) document.getElementById("maxInvalidInput").value = p.maxInvalid;
+        if (p.mode) document.getElementById("modeSelect").value = p.mode;
+        if (typeof p.inspectorWidth === "number" && Number.isFinite(p.inspectorWidth)) {
+          applyInspectorWidth(p.inspectorWidth);
+        }
+        if (p.inspectorCollapsed) {
+          document.getElementById("inspector").classList.add("collapsed");
+          document.getElementById("inspectorToggleBtn").innerHTML = "&#9664;";
+        }
+      } catch (_) {}
+      syncInspectorResizer();
+    }
+
+    const STRATEGY_DESCRIPTIONS = {
+      editable_context: "Maintains working.md notes & findings and prunes older steps to fit the token budget.",
+      bounded_history: "Baseline sliding window of recent tool steps and observations without persistent notes.",
+    };
+    const RETRIEVAL_DESCRIPTIONS = {
+      code_aware: "Combines ripgrep with Tree-sitter Python symbols to rank definitions above comments and return compact snippets.",
+      lexical_only: "Plain ripgrep text search returning raw matching lines without symbol parsing.",
+    };
+
+    function updateSettingsSummary() {
+      const s = document.getElementById("strategySelect").value;
+      const r = document.getElementById("retrievalSelect").value;
+      const c = document.getElementById("ctxInput").value;
+      document.getElementById("strategyHelp").textContent = STRATEGY_DESCRIPTIONS[s] || "";
+      document.getElementById("retrievalHelp").textContent = RETRIEVAL_DESCRIPTIONS[r] || "";
+      const unl = document.getElementById("unlimitedCheck").checked;
+      const callsEl = document.getElementById("maxCallsInput");
+      const stepsEl = document.getElementById("maxStepsInput");
+      if (unl) {
+        if (callsEl.value) savedMaxCalls = callsEl.value;
+        if (stepsEl.value) savedMaxSteps = stepsEl.value;
+        callsEl.disabled = true;
+        stepsEl.disabled = true;
+        callsEl.value = "";
+        stepsEl.value = "";
+        callsEl.placeholder = "∞";
+        stepsEl.placeholder = "∞";
+      } else {
+        callsEl.disabled = false;
+        stepsEl.disabled = false;
+        callsEl.placeholder = "";
+        stepsEl.placeholder = "";
+        if (!callsEl.value) callsEl.value = savedMaxCalls;
+        else savedMaxCalls = callsEl.value;
+        if (!stepsEl.value) stepsEl.value = savedMaxSteps;
+        else savedMaxSteps = stepsEl.value;
+      }
+      callsEl.closest(".field").classList.toggle("disabled", unl);
+      stepsEl.closest(".field").classList.toggle("disabled", unl);
+      const mc = unl ? "∞" : callsEl.value;
+      document.getElementById("activeSettingsSummary").textContent = `${s} · ${r} · ${c}ctx · ${mc}calls`;
+    }
+    for (const id of [
+      "strategySelect",
+      "retrievalSelect",
+      "ctxInput",
+      "unlimitedCheck",
+      "maxCallsInput",
+      "maxStepsInput",
+      "maxInvalidInput",
+      "modeSelect",
+    ]) {
+      document.getElementById(id).addEventListener("change", () => {
+        updateSettingsSummary();
+        savePreferences();
+      });
+    }
+
+    function populateModelSelect(models, configuredModel) {
+      const sel = document.getElementById("serverModelSelect");
+      const current = configuredModel ?? sel.value;
+      sel.innerHTML = "";
+      const autoOpt = document.createElement("option");
+      autoOpt.value = "";
+      autoOpt.textContent = models && models.length ? `Auto-detect (${models[0]})` : "Auto-detect from server";
+      sel.appendChild(autoOpt);
+      const seen = new Set([""]);
+      for (const m of models || []) {
+        if (!m || seen.has(m)) continue;
+        seen.add(m);
+        const opt = document.createElement("option");
+        opt.value = m;
+        opt.textContent = m;
+        sel.appendChild(opt);
+      }
+      if (current && !seen.has(current)) {
+        const opt = document.createElement("option");
+        opt.value = current;
+        opt.textContent = `${current} (saved)`;
+        sel.appendChild(opt);
+      }
+      sel.value = current || "";
+    }
+
+    function applyHealth(h, { forceInputs = false } = {}) {
+      const ok = Boolean(h.server_ok ?? h.llama_server_ok);
+      const dot = document.getElementById("healthDot");
+      const txt = document.getElementById("healthText");
+      const btn = document.getElementById("healthBtn");
+      const setupCard = document.getElementById("setupCard");
+      if (ok) {
+        dot.className = "dot ok";
+        txt.textContent = "Server online";
+        btn.title = `${h.base_url}${h.model ? " · " + h.model : ""} (click to configure)`;
+      } else {
+        dot.className = "dot err";
+        txt.textContent = "Server offline";
+        btn.title = `${h.base_url} offline (click to configure)`;
+      }
+      if (setupCard) {
+        setupCard.classList.toggle("visible", !ok);
+      }
+      const modalOpen = document.getElementById("settingsModal").classList.contains("open");
+      if (forceInputs || !modalOpen) {
+        if (h.base_url) document.getElementById("serverUrlInput").value = h.base_url;
+        populateModelSelect(h.models || [], h.configured_model ?? "");
+      }
+      if (!window._repoInitialized) {
+        window._repoInitialized = true;
+        setSelectedRepo(h.default_repo || "");
+      }
+    }
+
+    async function checkHealth() {
+      try {
+        const h = await api("/api/health");
+        applyHealth(h);
+      } catch (_) {}
+    }
+
+    async function saveServerConfig() {
+      const statusEl = document.getElementById("serverConfigStatus");
+      statusEl.className = "server-status";
+      statusEl.textContent = "Testing connection...";
+      try {
+        const res = await api("/api/config", {
+          method: "POST",
+          body: JSON.stringify({
+            base_url: document.getElementById("serverUrlInput").value.trim(),
+            model: document.getElementById("serverModelSelect").value,
+          }),
+        });
+        applyHealth(res, { forceInputs: true });
+        if (res.server_ok) {
+          const count = (res.models || []).length;
+          statusEl.className = "server-status ok";
+          statusEl.textContent = count
+            ? `Connected to ${res.base_url} (${count} model${count === 1 ? "" : "s"} detected)`
+            : `Connected to ${res.base_url}`;
+        } else {
+          statusEl.className = "server-status err";
+          statusEl.textContent = `Saved ${res.base_url}, but server is currently offline.`;
+        }
+      } catch (err) {
+        statusEl.className = "server-status err";
+        statusEl.textContent = err.message;
+      }
+    }
+
+    function renderDiff(diffText) {
+      const box = document.getElementById("diffBox");
+      box.innerHTML = "";
+      if (!diffText || !diffText.trim()) {
+        const empty = document.createElement("span");
+        empty.className = "diff-empty";
+        empty.textContent = "(no candidate diff)";
+        box.appendChild(empty);
+        return;
+      }
+      for (const line of diffText.split("\n")) {
+        const span = document.createElement("span");
+        span.className = "diff-line";
+        if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("diff --git") || line.startsWith("index ")) {
+          span.classList.add("diff-meta");
+        } else if (line.startsWith("@@")) {
+          span.classList.add("diff-hunk");
+        } else if (line.startsWith("+")) {
+          span.classList.add("diff-add");
+        } else if (line.startsWith("-")) {
+          span.classList.add("diff-del");
+        }
+        span.textContent = line || " ";
+        box.appendChild(span);
+      }
+    }
+
+    function appendInlineMarkdown(parent, text) {
+      const tokenRe = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*)/g;
+      let last = 0;
+      let m;
+      while ((m = tokenRe.exec(text)) !== null) {
+        if (m.index > last) {
+          parent.appendChild(document.createTextNode(text.slice(last, m.index)));
+        }
+        const tok = m[0];
+        if (tok.startsWith("`")) {
+          const code = document.createElement("code");
+          code.className = "md-inline-code";
+          code.textContent = tok.slice(1, -1);
+          parent.appendChild(code);
+        } else if (tok.startsWith("**")) {
+          const strong = document.createElement("strong");
+          strong.textContent = tok.slice(2, -2);
+          parent.appendChild(strong);
+        } else {
+          const em = document.createElement("em");
+          em.textContent = tok.slice(1, -1);
+          parent.appendChild(em);
+        }
+        last = tokenRe.lastIndex;
+      }
+      if (last < text.length) {
+        parent.appendChild(document.createTextNode(text.slice(last)));
+      }
+    }
+
+    function renderMarkdown(container, rawText) {
+      container.innerHTML = "";
+      container.classList.add("md");
+      const text = String(rawText ?? "");
+      const lines = text.replace(/\r\n/g, "\n").split("\n");
+      let i = 0;
+      while (i < lines.length) {
+        const line = lines[i];
+        const fence = line.match(/^\s*```([^\s`]*).*$/);
+        if (fence) {
+          const lang = fence[1] || "code";
+          const codeLines = [];
+          i += 1;
+          while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) {
+            codeLines.push(lines[i]);
+            i += 1;
+          }
+          if (i < lines.length) i += 1;
+          const codeText = codeLines.join("\n");
+          const block = document.createElement("div");
+          block.className = "md-code-block";
+          const hdr = document.createElement("div");
+          hdr.className = "md-code-hdr";
+          const langSpan = document.createElement("span");
+          langSpan.textContent = lang;
+          const copyBtn = document.createElement("button");
+          copyBtn.type = "button";
+          copyBtn.className = "md-copy-btn";
+          copyBtn.textContent = "Copy";
+          copyBtn.onclick = () => {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+              navigator.clipboard.writeText(codeText).then(() => {
+                copyBtn.textContent = "Copied";
+                setTimeout(() => { copyBtn.textContent = "Copy"; }, 1200);
+              }).catch(() => {});
+            }
+          };
+          hdr.appendChild(langSpan);
+          hdr.appendChild(copyBtn);
+          const pre = document.createElement("pre");
+          pre.className = "md-code-pre";
+          pre.textContent = codeText;
+          block.appendChild(hdr);
+          block.appendChild(pre);
+          container.appendChild(block);
+          continue;
+        }
+        if (!line.trim()) {
+          i += 1;
+          continue;
+        }
+        const heading = line.match(/^(#{1,6})\s+(.+)$/);
+        if (heading) {
+          const h = document.createElement("div");
+          const level = Math.min(3, heading[1].length);
+          h.className = `md-h md-h${level}`;
+          appendInlineMarkdown(h, heading[2]);
+          container.appendChild(h);
+          i += 1;
+          continue;
+        }
+        if (/^\s*[-*]\s+/.test(line)) {
+          const ul = document.createElement("ul");
+          ul.className = "md-list";
+          while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+            const li = document.createElement("li");
+            appendInlineMarkdown(li, lines[i].replace(/^\s*[-*]\s+/, ""));
+            ul.appendChild(li);
+            i += 1;
+          }
+          container.appendChild(ul);
+          continue;
+        }
+        if (/^\s*\d+\.\s+/.test(line)) {
+          const ol = document.createElement("ol");
+          ol.className = "md-list";
+          while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+            const li = document.createElement("li");
+            appendInlineMarkdown(li, lines[i].replace(/^\s*\d+\.\s+/, ""));
+            ol.appendChild(li);
+            i += 1;
+          }
+          container.appendChild(ol);
+          continue;
+        }
+        const paraLines = [];
+        while (
+          i < lines.length &&
+          lines[i].trim() &&
+          !/^```/.test(lines[i]) &&
+          !/^#{1,3}\s+/.test(lines[i]) &&
+          !/^\s*[-*]\s+/.test(lines[i]) &&
+          !/^\s*\d+\.\s+/.test(lines[i])
+        ) {
+          paraLines.push(lines[i]);
+          i += 1;
+        }
+        const p = document.createElement("p");
+        p.className = "md-p";
+        paraLines.forEach((pl, idx) => {
+          if (idx > 0) p.appendChild(document.createElement("br"));
+          appendInlineMarkdown(p, pl);
+        });
+        container.appendChild(p);
+      }
+    }
+
+    function renderLiveStatus(container, label, variant = "") {
+      container.classList.remove("md");
+      container.innerHTML = "";
+      const wrap = document.createElement("span");
+      wrap.className = "status-live";
+      const dot = document.createElement("span");
+      dot.className = variant ? `pulse-dot ${variant}` : "pulse-dot";
+      const txt = document.createElement("span");
+      txt.textContent = label;
+      wrap.appendChild(dot);
+      wrap.appendChild(txt);
+      container.appendChild(wrap);
+    }
+
+    function createToolPill(ev) {
+      const data = ev.data || {};
+      const det = document.createElement("details");
+      det.className = "tool-pill";
+      const sum = document.createElement("summary");
+
+      const dot = document.createElement("span");
+      dot.className = "tool-dot";
+      if (ev.event_type === "tool_result") {
+        dot.classList.add(data.ok === false ? "err" : "ok");
+      } else if (ev.event_type === "verification_result") {
+        dot.classList.add(data.quality === "verified" ? "ok" : "warn");
+      } else if (ev.event_type === "context_pruned") {
+        dot.classList.add("warn");
+      }
+
+      const badge = document.createElement("span");
+      badge.className = "tool-badge";
+      badge.textContent = data.tool || ev.event_type;
+
+      const target = document.createElement("span");
+      target.className = "tool-target";
+      const targetParts = [];
+      if (ev.event_type === "tool_requested" || ev.event_type === "tool_result") {
+        const args = data.arguments || data.args || data;
+        if (args.path) targetParts.push(args.path);
+        else if (args.query) targetParts.push(`"${args.query}"`);
+        else if (args.directory) targetParts.push(args.directory);
+        else if (args.pattern) targetParts.push(args.pattern);
+        if (ev.event_type === "tool_result") {
+          targetParts.push(data.ok === false ? (data.error || "failed") : "ok");
+        }
+      } else if (ev.event_type === "context_edit") {
+        targetParts.push(data.target || data.path || data.operation || "notes updated");
+      } else if (ev.event_type === "context_pruned") {
+        targetParts.push(data.reason || "trimmed context to fit budget");
+      } else if (ev.event_type === "verification_result") {
+        targetParts.push(data.quality || data.status || "checked");
+      }
+      target.textContent = targetParts.filter(Boolean).join(" · ") || ev.event_type;
+      target.title = target.textContent;
+
+      const seq = document.createElement("span");
+      seq.className = "tool-seq";
+      seq.textContent = `#${ev.sequence}`;
+
+      sum.appendChild(dot);
+      sum.appendChild(badge);
+      sum.appendChild(target);
+      sum.appendChild(seq);
+
+      const pre = document.createElement("pre");
+      pre.className = "tool-json";
+      pre.textContent = JSON.stringify(data, null, 2);
+
+      det.appendChild(sum);
+      det.appendChild(pre);
+      return det;
+    }
+
+    function createTurnNodes(runId, userText) {
+      const empty = document.getElementById("emptyState");
+      if (empty) empty.style.display = "none";
+      const thread = document.getElementById("thread");
+
+      const userDiv = document.createElement("div");
+      userDiv.className = "msg user";
+      const userBubble = document.createElement("div");
+      userBubble.className = "bubble";
+      userBubble.textContent = userText;
+      userDiv.appendChild(userBubble);
+      thread.appendChild(userDiv);
+
+      const asstDiv = document.createElement("div");
+      asstDiv.className = "msg assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      renderLiveStatus(bubble, "Thinking...");
+      const details = document.createElement("details");
+      details.className = "tools";
+      const summary = document.createElement("summary");
+      summary.textContent = "Tool calls & steps (0)";
+      const toolList = document.createElement("div");
+      toolList.className = "tool-list";
+      details.appendChild(summary);
+      details.appendChild(toolList);
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+
+      asstDiv.appendChild(bubble);
+      asstDiv.appendChild(details);
+      asstDiv.appendChild(meta);
+      thread.appendChild(asstDiv);
+      thread.scrollTop = thread.scrollHeight;
+
+      turns.set(runId, { bubble, summary, toolList, meta, renderedEvents: 0, lastBubbleKey: "live:Thinking..." });
+    }
+
+    function renderRun(run, runId = currentRunId) {
+      const thread = document.getElementById("thread");
+      const wasAtBottom = thread.scrollHeight - thread.scrollTop - thread.clientHeight < 48;
+
+      const nodes = runId ? turns.get(runId) : null;
+      if (nodes) {
+        if (run.final_response) {
+          const key = `md:${run.final_response}`;
+          if (nodes.lastBubbleKey !== key) {
+            renderMarkdown(nodes.bubble, run.final_response);
+            nodes.lastBubbleKey = key;
+          }
+        } else if (run.status === "running" || run.status === "waiting_approval") {
+          const waiting = run.status === "waiting_approval";
+          const label = waiting ? "Waiting for approval..." : `Working (step ${run.steps})...`;
+          const key = `live:${waiting ? "amber" : "blue"}:${label}`;
+          if (nodes.lastBubbleKey !== key) {
+            renderLiveStatus(nodes.bubble, label, waiting ? "amber" : "");
+            nodes.lastBubbleKey = key;
+          }
+        } else {
+          const label = `Stopped (${run.stop_reason || run.status})`;
+          const key = `txt:${label}`;
+          if (nodes.lastBubbleKey !== key) {
+            nodes.bubble.classList.remove("md");
+            nodes.bubble.textContent = label;
+            nodes.lastBubbleKey = key;
+          }
+        }
+
+        const interesting = (run.events || []).filter((e) =>
+          ["tool_requested", "tool_result", "context_edit", "context_pruned", "verification_result"].includes(e.event_type)
+        );
+        nodes.summary.textContent = `Tool calls & steps (${interesting.length})`;
+        if (interesting.length < nodes.renderedEvents) {
+          nodes.toolList.innerHTML = "";
+          nodes.renderedEvents = 0;
+        }
+        for (let i = nodes.renderedEvents; i < interesting.length; i++) {
+          nodes.toolList.appendChild(createToolPill(interesting[i]));
+        }
+        nodes.renderedEvents = interesting.length;
+        nodes.meta.textContent = `${run.status}${run.stop_reason ? " (" + run.stop_reason + ")" : ""} · ${run.steps} steps · ${run.model_calls} calls · ${run.total_tokens ?? "-"} tokens`;
+      }
+
+      const box = document.getElementById("approvalBox");
+      if (run.pending_approval) {
+        box.style.display = "flex";
+        document.getElementById("approvalText").textContent =
+          `${run.pending_approval.tool} -> ${run.pending_approval.target || run.pending_approval.path}`;
+      } else {
+        box.style.display = "none";
+      }
+
+      renderDiff(run.candidate_diff || "");
+      renderMemoryFolder(run.memory_files, run.working_md);
+      updateContextBar(run.context_tokens ?? 0, run.context_window || Number(document.getElementById("ctxInput").value) || 8192);
+
+      const active = run.status === "running" || run.status === "pending" || run.status === "waiting_approval";
+      document.getElementById("sendBtn").style.display = active ? "none" : "inline-flex";
+      document.getElementById("stopBtn").style.display = active ? "inline-flex" : "none";
+      if (!active && pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+        loadHistory();
+      }
+      if (wasAtBottom) {
+        thread.scrollTop = thread.scrollHeight;
+      }
+    }
+
+    async function pollRun() {
+      if (!currentRunId) return;
+      try {
+        const run = await api(`/api/runs/${currentRunId}`);
+        renderRun(run, currentRunId);
+      } catch (_) {}
+    }
+
+    async function sendTask() {
+      document.getElementById("runError").textContent = "";
+      const task = document.getElementById("taskInput").value;
+      if (!task.trim()) return;
+      try {
+        const modeVal = document.getElementById("modeSelect").value;
+        const payload = {
+          repo: selectedRepo,
+          task,
+          session_id: sessionId,
+          context_strategy: document.getElementById("strategySelect").value,
+          retrieval_mode: document.getElementById("retrievalSelect").value,
+          context_window: Number(document.getElementById("ctxInput").value) || 8192,
+          unlimited_steps: document.getElementById("unlimitedCheck").checked,
+          max_model_calls: Number(document.getElementById("maxCallsInput").value) || 30,
+          max_steps: Number(document.getElementById("maxStepsInput").value) || 30,
+          max_consecutive_invalid_actions: Number(document.getElementById("maxInvalidInput").value) || 6,
+          coding: modeVal !== "read_only",
+          auto_approve: modeVal === "coding_auto",
+        };
+        document.getElementById("sendBtn").style.display = "none";
+        document.getElementById("stopBtn").style.display = "inline-flex";
+        const created = await api("/api/runs", { method: "POST", body: JSON.stringify(payload) });
+        document.getElementById("taskInput").value = "";
+        autoResizeTaskInput();
+        currentRunId = created.run_id;
+        createTurnNodes(currentRunId, task.trim());
+        if (pollTimer) clearInterval(pollTimer);
+        pollTimer = setInterval(pollRun, 400);
+        await pollRun();
+      } catch (err) {
+        document.getElementById("sendBtn").style.display = "inline-flex";
+        document.getElementById("stopBtn").style.display = "none";
+        document.getElementById("runError").textContent = err.message;
+      }
+    }
+
+    let selectedRepo = "";
+
+    function setSelectedRepo(repoPath) {
+      selectedRepo = (repoPath || "").trim();
+      const browseBtn = document.getElementById("browseRepoBtn");
+      const labelEl = document.getElementById("repoBtnLabel");
+      const clearBtn = document.getElementById("clearRepoBtn");
+      if (selectedRepo) {
+        const name = selectedRepo.replace(/\/+$/, "").split("/").pop() || selectedRepo;
+        labelEl.textContent = name;
+        browseBtn.classList.add("has-repo");
+        browseBtn.title = `${selectedRepo} (click to change)`;
+        clearBtn.style.display = "inline-flex";
+      } else {
+        labelEl.textContent = "Repo";
+        browseBtn.classList.remove("has-repo");
+        browseBtn.title = "Browse for a repository folder";
+        clearBtn.style.display = "none";
+      }
+      syncModeForRepo();
+    }
+
+    function syncModeForRepo() {
+      const hasRepo = Boolean(selectedRepo);
+      const sel = document.getElementById("modeSelect");
+      const ro = document.getElementById("readOnlyOpt");
+      ro.textContent = hasRepo ? "Read-only" : "Chat only";
+      for (const opt of sel.options) {
+        if (opt.value !== "read_only") opt.disabled = !hasRepo;
+      }
+      if (!hasRepo) sel.value = "read_only";
+    }
+
+    document.getElementById("clearRepoBtn").onclick = () => {
+      setSelectedRepo("");
+    };
+
+    document.getElementById("browseRepoBtn").onclick = async () => {
+      document.getElementById("runError").textContent = "";
+      try {
+        const res = await api("/api/pick-repo", { method: "POST", body: "{}" });
+        if (res.unsupported) {
+          const entered = window.prompt("Enter the full path to your repository folder:", selectedRepo || "");
+          if (entered && entered.trim()) {
+            setSelectedRepo(entered.trim());
+          }
+          return;
+        }
+        if (!res.cancelled && res.path) {
+          setSelectedRepo(res.path);
+        }
+      } catch (err) {
+        document.getElementById("runError").textContent = err.message;
+      }
+    };
+
+    function autoResizeTaskInput() {
+      const ta = document.getElementById("taskInput");
+      ta.style.height = "auto";
+      ta.style.height = `${Math.min(150, Math.max(44, ta.scrollHeight))}px`;
+    }
+
+    document.getElementById("sendBtn").onclick = sendTask;
+    document.getElementById("taskInput").addEventListener("input", autoResizeTaskInput);
+    document.getElementById("taskInput").addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        sendTask();
+      }
+    });
+
+    function closeSessionsMenu() {
+      document.getElementById("sessionsMenu").classList.remove("open");
+      document.getElementById("sessionsBtn").setAttribute("aria-expanded", "false");
+    }
+
+    function startNewChat() {
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      sessionId = crypto.randomUUID ? crypto.randomUUID().slice(0, 12) : String(Date.now());
+      currentRunId = null;
+      turns.clear();
+      document.getElementById("thread").innerHTML = '<div class="empty-state" id="emptyState">New chat started. Send a message to begin.</div>';
+      renderDiff("");
+      selectedFindingFile = null;
+      renderMemoryFolder([], "");
+      updateContextBar(0, Number(document.getElementById("ctxInput").value) || 8192);
+      loadHistory();
+    }
+
+    document.getElementById("sessionsBtn").onclick = (e) => {
+      e.stopPropagation();
+      const menu = document.getElementById("sessionsMenu");
+      const open = menu.classList.toggle("open");
+      document.getElementById("sessionsBtn").setAttribute("aria-expanded", String(open));
+      if (open) loadHistory();
+    };
+
+    document.addEventListener("click", (e) => {
+      const dd = document.getElementById("sessionsDropdown");
+      if (dd && !dd.contains(e.target)) closeSessionsMenu();
+    });
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") closeSessionsMenu();
+    });
+
+    document.getElementById("newChatBtn").onclick = () => {
+      startNewChat();
+      closeSessionsMenu();
+    };
+
+    document.getElementById("stopBtn").onclick = async () => {
+      if (!currentRunId) return;
+      await api(`/api/runs/${currentRunId}/cancel`, { method: "POST", body: "{}" });
+      await pollRun();
+    };
+
+    document.getElementById("approveBtn").onclick = async () => {
+      if (!currentRunId) return;
+      await api(`/api/runs/${currentRunId}/approve`, { method: "POST", body: JSON.stringify({ approved: true }) });
+      await pollRun();
+    };
+
+    document.getElementById("denyBtn").onclick = async () => {
+      if (!currentRunId) return;
+      await api(`/api/runs/${currentRunId}/approve`, { method: "POST", body: JSON.stringify({ approved: false }) });
+      await pollRun();
+    };
+
+    document.getElementById("inspectorToggleBtn").onclick = () => {
+      const panel = document.getElementById("inspector");
+      const collapsed = panel.classList.toggle("collapsed");
+      document.getElementById("inspectorToggleBtn").innerHTML = collapsed ? "&#9664;" : "&#9654;";
+      syncInspectorResizer();
+      savePreferences();
+    };
+
+    (() => {
+      const resizer = document.getElementById("inspectorResizer");
+      const panel = document.getElementById("inspector");
+      let dragging = false;
+
+      resizer.addEventListener("pointerdown", (e) => {
+        if (panel.classList.contains("collapsed")) return;
+        dragging = true;
+        resizer.classList.add("dragging");
+        panel.classList.add("resizing");
+        document.body.classList.add("resizing");
+        if (resizer.setPointerCapture) resizer.setPointerCapture(e.pointerId);
+        e.preventDefault();
+      });
+
+      window.addEventListener("pointermove", (e) => {
+        if (!dragging) return;
+        applyInspectorWidth(window.innerWidth - e.clientX);
+      });
+
+      function stopResize() {
+        if (!dragging) return;
+        dragging = false;
+        resizer.classList.remove("dragging");
+        panel.classList.remove("resizing");
+        document.body.classList.remove("resizing");
+        savePreferences();
+      }
+
+      window.addEventListener("pointerup", stopResize);
+      window.addEventListener("pointercancel", stopResize);
+      window.addEventListener("resize", () => {
+        if (!panel.classList.contains("collapsed") && panel.style.width) {
+          applyInspectorWidth(inspectorWidth);
+        }
+      });
+    })();
+    function openSettingsModal() {
+      document.getElementById("serverConfigStatus").textContent = "";
+      document.getElementById("settingsModal").classList.add("open");
+    }
+    document.getElementById("settingsBtn").onclick = openSettingsModal;
+    document.getElementById("healthBtn").onclick = openSettingsModal;
+    document.getElementById("openSetupSettingsBtn").onclick = openSettingsModal;
+    document.getElementById("saveServerBtn").onclick = saveServerConfig;
+    document.getElementById("serverModelSelect").addEventListener("change", saveServerConfig);
+    for (const btn of document.querySelectorAll("[data-preset-url]")) {
+      btn.onclick = () => {
+        document.getElementById("serverUrlInput").value = btn.dataset.presetUrl;
+        document.getElementById("serverModelSelect").value = "";
+        saveServerConfig();
+      };
+    }
+    document.getElementById("closeSettingsBtn").onclick = () => {
+      document.getElementById("settingsModal").classList.remove("open");
+      updateSettingsSummary();
+      updateContextBar(lastContextUsed, Number(document.getElementById("ctxInput").value) || 8192);
+    };
+
+    function renderSavedTurn(turn) {
+      const thread = document.getElementById("thread");
+      const userDiv = document.createElement("div");
+      userDiv.className = "msg user";
+      const userBubble = document.createElement("div");
+      userBubble.className = "bubble";
+      userBubble.textContent = turn.user_prompt;
+      userDiv.appendChild(userBubble);
+      thread.appendChild(userDiv);
+
+      const asstDiv = document.createElement("div");
+      asstDiv.className = "msg assistant";
+      const bubble = document.createElement("div");
+      bubble.className = "bubble";
+      renderMarkdown(bubble, turn.assistant_reply);
+      const meta = document.createElement("div");
+      meta.className = "msg-meta";
+      meta.textContent = `${turn.status}${turn.stop_reason ? " (" + turn.stop_reason + ")" : ""} · ${turn.steps} steps · ${turn.model_calls} calls · ${turn.total_tokens ?? "-"} tokens`;
+      asstDiv.appendChild(bubble);
+      asstDiv.appendChild(meta);
+      thread.appendChild(asstDiv);
+    }
+
+    let selectedFindingFile = null;
+
+    function renderMarkdownOrEmpty(container, text, emptyLabel) {
+      if (!text || !text.trim()) {
+        container.innerHTML = "";
+        const span = document.createElement("span");
+        span.className = "md-pane-empty";
+        span.textContent = emptyLabel;
+        container.appendChild(span);
+        return;
+      }
+      renderMarkdown(container, text);
+    }
+
+    function renderMemoryFolder(files, fallbackWorkingMd = "") {
+      const notesBox = document.getElementById("notesBox");
+      const tree = document.getElementById("findingsTree");
+      const findingBox = document.getElementById("findingBox");
+      const map = new Map();
+      for (const f of files || []) {
+        map.set(f.path, f.content);
+      }
+      const workingMd = map.get("working.md") ?? fallbackWorkingMd ?? "";
+      renderMarkdownOrEmpty(notesBox, workingMd, "(no working.md notes yet)");
+
+      const findings = [...map.keys()]
+        .filter((p) => p.startsWith("findings/") || p === "task.md")
+        .sort();
+      if (!findings.includes(selectedFindingFile)) {
+        selectedFindingFile = findings[0] || null;
+      }
+
+      tree.innerHTML = "";
+      const folderEl = document.createElement("div");
+      folderEl.className = "mem-folder";
+      folderEl.textContent = findings.length ? "findings/" : "findings/ (empty)";
+      tree.appendChild(folderEl);
+
+      for (const fp of findings) {
+        const el = document.createElement("div");
+        el.className = `mem-item indent${selectedFindingFile === fp ? " active" : ""}`;
+        el.textContent = fp.startsWith("findings/") ? fp.slice("findings/".length) : fp;
+        el.onclick = () => {
+          selectedFindingFile = fp;
+          renderMemoryFolder(files, fallbackWorkingMd);
+        };
+        tree.appendChild(el);
+      }
+
+      if (!selectedFindingFile) {
+        renderMarkdownOrEmpty(findingBox, "", "(no findings yet)");
+      } else {
+        renderMarkdownOrEmpty(findingBox, map.get(selectedFindingFile) || "", `(empty ${selectedFindingFile})`);
+      }
+    }
+
+    async function resumeSession(targetSessionId) {
+      const detail = await api(`/api/sessions/${encodeURIComponent(targetSessionId)}`);
+      if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+      sessionId = detail.session_id;
+      currentRunId = null;
+      turns.clear();
+      const thread = document.getElementById("thread");
+      thread.innerHTML = "";
+      for (const t of detail.turns || []) {
+        renderSavedTurn(t);
+      }
+      thread.scrollTop = thread.scrollHeight;
+      setSelectedRepo(detail.repo || "");
+      renderDiff("");
+      selectedFindingFile = null;
+      renderMemoryFolder(detail.memory_files, detail.working_md);
+      closeSessionsMenu();
+      loadHistory();
+    }
+
+    function formatRelativeTime(ts) {
+      if (!ts) return "";
+      const sec = typeof ts === "number" ? ts : Date.parse(ts) / 1000;
+      if (!Number.isFinite(sec)) return "";
+      const diff = Math.max(0, Math.floor(Date.now() / 1000 - sec));
+      if (diff < 60) return "now";
+      const mins = Math.floor(diff / 60);
+      if (mins < 60) return `${mins}m`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h`;
+      const days = Math.floor(hrs / 24);
+      if (days < 30) return `${days}d`;
+      const months = Math.floor(days / 30);
+      if (months < 12) return `${months}mo`;
+      return `${Math.floor(months / 12)}y`;
+    }
+
+    function createSessionRow(item, inProject) {
+      const el = document.createElement("div");
+      el.className = `hist-item${inProject ? " in-project" : ""}${item.session_id === sessionId ? " active" : ""}`;
+      const label = document.createElement("span");
+      label.className = "hist-item-label";
+      label.textContent = item.title || "Untitled chat";
+      label.title = `${item.title || "Untitled chat"} (${item.turn_count} turns)`;
+
+      const timeEl = document.createElement("span");
+      timeEl.className = "hist-item-time";
+      timeEl.textContent = formatRelativeTime(item.updated_at) || `${item.turn_count}t`;
+
+      const delBtn = document.createElement("button");
+      delBtn.className = "sessions-mini-btn hist-item-del";
+      delBtn.type = "button";
+      delBtn.textContent = "×";
+      delBtn.title = "Delete session";
+      delBtn.onclick = async (e) => {
+        e.stopPropagation();
+        await api(`/api/sessions/${encodeURIComponent(item.session_id)}/delete`, {
+          method: "POST",
+          body: "{}",
+        });
+        if (sessionId === item.session_id) {
+          startNewChat();
+        } else {
+          loadHistory();
+        }
+      };
+
+      el.appendChild(label);
+      el.appendChild(timeEl);
+      el.appendChild(delBtn);
+      el.onclick = () => resumeSession(item.session_id);
+      return el;
+    }
+
+    async function loadHistory() {
+      try {
+        const data = await api("/api/sessions");
+        const list = document.getElementById("historyList");
+        list.innerHTML = "";
+        const sessions = data.sessions || [];
+        if (sessions.length === 0) {
+          const empty = document.createElement("div");
+          empty.className = "sessions-empty";
+          empty.textContent = "No saved sessions yet";
+          list.appendChild(empty);
+          return;
+        }
+
+        const byRepo = new Map();
+        const chatOnly = [];
+        for (const item of sessions) {
+          const repo = (item.repo || "").trim();
+          if (repo) {
+            if (!byRepo.has(repo)) byRepo.set(repo, []);
+            byRepo.get(repo).push(item);
+          } else {
+            chatOnly.push(item);
+          }
+        }
+
+        if (byRepo.size > 0) {
+          const projSec = document.createElement("div");
+          projSec.className = "sessions-section-hdr";
+          projSec.textContent = "Projects";
+          list.appendChild(projSec);
+
+          for (const [repoPath, items] of byRepo.entries()) {
+            const projHdr = document.createElement("div");
+            projHdr.className = "sessions-project-hdr";
+            projHdr.innerHTML =
+              '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+            const nameSpan = document.createElement("span");
+            nameSpan.className = "sessions-project-name";
+            const repoName = repoPath.replace(/\/+$/, "").split("/").pop() || repoPath;
+            nameSpan.textContent = repoName;
+            nameSpan.title = repoPath;
+
+            const addBtn = document.createElement("button");
+            addBtn.type = "button";
+            addBtn.className = "sessions-mini-btn";
+            addBtn.textContent = "+";
+            addBtn.title = `New chat in ${repoName}`;
+            addBtn.onclick = (e) => {
+              e.stopPropagation();
+              startNewChat();
+              setSelectedRepo(repoPath);
+              closeSessionsMenu();
+            };
+
+            projHdr.appendChild(nameSpan);
+            projHdr.appendChild(addBtn);
+            list.appendChild(projHdr);
+
+            for (const item of items) {
+              list.appendChild(createSessionRow(item, true));
+            }
+          }
+        }
+
+        if (chatOnly.length > 0) {
+          const convSec = document.createElement("div");
+          convSec.className = "sessions-section-hdr";
+          const titleSpan = document.createElement("span");
+          titleSpan.textContent = "Conversations";
+          const addBtn = document.createElement("button");
+          addBtn.type = "button";
+          addBtn.className = "sessions-mini-btn";
+          addBtn.textContent = "+";
+          addBtn.title = "New chat-only conversation";
+          addBtn.onclick = (e) => {
+            e.stopPropagation();
+            startNewChat();
+            setSelectedRepo("");
+            closeSessionsMenu();
+          };
+          convSec.appendChild(titleSpan);
+          convSec.appendChild(addBtn);
+          list.appendChild(convSec);
+
+          for (const item of chatOnly) {
+            list.appendChild(createSessionRow(item, false));
+          }
+        }
+      } catch (_) {}
+    }
+
+    for (const btn of document.querySelectorAll(".tab-btn")) {
+      btn.onclick = () => {
+        document.querySelectorAll(".tab-btn").forEach((b) => b.classList.remove("active"));
+        document.querySelectorAll(".tab-pane").forEach((p) => p.classList.remove("active"));
+        btn.classList.add("active");
+        document.getElementById(btn.dataset.tab).classList.add("active");
+      };
+    }
+
+    let lastContextUsed = 0;
+
+    function updateContextBar(used, limit) {
+      lastContextUsed = used || 0;
+      const safeLimit = Math.max(1, limit || 8192);
+      const pct = Math.min(100, Math.round((lastContextUsed / safeLimit) * 100));
+      document.getElementById("ctxLabel").textContent =
+        `Context: ${lastContextUsed.toLocaleString()} / ${safeLimit.toLocaleString()} (${pct}%)`;
+      const fill = document.getElementById("ctxFill");
+      fill.style.width = `${pct}%`;
+      fill.style.backgroundColor =
+        pct >= 90 ? "var(--red)" : pct >= 75 ? "var(--amber)" : "var(--accent)";
+    }
+
+    loadPreferences();
+    updateSettingsSummary();
+    updateContextBar(0, Number(document.getElementById("ctxInput").value) || 8192);
+    renderMemoryFolder([], "");
+    renderDiff("");
+    checkHealth();
+    setInterval(checkHealth, 5000);
+    loadHistory();
+  </script>
+</body>
+</html>

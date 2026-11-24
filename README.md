@@ -1,141 +1,118 @@
 # Efficient Code Agent
 
-**A lightweight, local-first coding agent harness designed to make small language models more effective on everyday hardware.**
+**A local-first coding agent harness that makes small quantized models reliable on everyday hardware.**
 
-> **Status:** Early development / architecture planning. The capabilities and commands below describe the intended design, not yet implemented functionality.
+![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-3776ab?style=flat-square)
+![Local-First](https://img.shields.io/badge/local--first-100%25%20offline-22c55e?style=flat-square)
+![OpenAI-Compatible](https://img.shields.io/badge/servers-llama.cpp%20%7C%20Ollama%20%7C%20LM%20Studio-3b82f6?style=flat-square)
 
-## Why this project?
+[Features](#what-it-does) · [Benchmarks](#benchmarks) · [Quickstart](#quickstart) · [Architecture](#how-it-works) · [Docs](#documentation)
 
-Most coding agents benefit from large models, long context windows, and generous compute budgets. This project explores a different question:
+---
 
-**Can a small local coding model solve more software engineering tasks when its harness intelligently manages context, retrieves relevant code, and verifies its work?**
+![Efficient Code Agent Web UI](docs/assets/ui-preview.png)
 
-The initial hardware target is a **16 GB Apple Silicon MacBook Air**. The goal is not to train a new model or develop a new inference engine; it is to improve **task success under practical memory and compute constraints**.
+## Why Efficient Code Agent?
 
-## Planned capabilities
+Most coding agents assume frontier cloud models with 200K+ context windows. **Efficient Code Agent** is built for the opposite regime—running **7B quantized models (e.g., `Qwen2.5-Coder-7B-Q4_K_M`) inside an 8,192-token context window on a 16 GB laptop**, with zero cloud APIs, zero Docker required, and full inspectability over every tool call, note, and diff.
 
-### 1. Self-editing working context (CLM-inspired)
+## What It Does
 
-Rather than relying solely on a growing transcript or automatic summarization, the agent will be able to propose edits to a compact working context:
+- **Self-Editing Working Context (`working.md`):** CLM-inspired Markdown notes and lazy `findings/*.md` files (with `read_memory` gated out of the schema until off-prompt findings exist) that let the model distill discoveries and prune old tool logs deterministically within a strict `TokenBudget`.
+- **Code-Aware Retrieval (Tree-sitter + ripgrep):** Parses Python files into cached symbol maps, ranks exact definitions above comments, and returns bounded line-numbered snippets—cutting prompt tokens by up to **~70%** on multi-file lookups.
+- **Safe, Policy-Gated Coding Loop:** Workspace-confined reads, line-range edits (with automatic SHA-256 verification and exact-text fallback), and allowlisted compact `pytest` execution (with optional post-edit auto-test) under explicit `ASK` / `AUTO` / `DENY` policies.
+- **Graduated Loop Intervention & Verification:** Refuses duplicate tool calls, temporarily masks stuck tools out of `response_schema` for 1 turn so small models recover instead of stalling, and requires post-edit passing tests before accepting completion.
+- **Local Web UI & CLI:** Self-contained dark-mode web workspace (`harness ui`) with grouped project sessions, live Markdown notes/findings, color-coded diffs, and one-click presets for **llama.cpp**, **Ollama**, and **LM Studio**—all backed by SQLite run traces.
 
-- Preserve relevant discoveries and decisions.
-- Replace outdated hypotheses with verified findings.
-- Remove no-longer-useful details.
-- Maintain continuity across multiple model calls.
+## Benchmarks
 
-The harness will validate context edits, preserve immutable instructions and task requirements, and enforce a deterministic token-budget fallback. Whether proactive self-editing actually improves results will be tested against a conventional baseline.
+- **2.5× higher on Medium + Hard tasks** than `mini-swe-agent` (`23.8%` vs. `9.5%`) under an 8K local window (`Qwen2.5-Coder-7B-Q4_K_M`, Apple M4 16 GB).
+- **Most distinct exercises solved (`5 / 10`)** across all three harnesses (vs. `4 / 10` for both `mini-swe-agent` and `aider`), with **less than half as many timeouts** as `mini-swe-agent` (`6` vs. `14`).
+- **Built for multi-file repos:** Tree-sitter `code_aware` retrieval cuts prompt tokens by **~70%** (`6,444` vs. `21,354` tokens), and on 16-file repos with no filenames in the prompt (`benchmarks/memory_lookup/`), the harness localized and patched **5 / 5** target files (vs. `1 / 5` and 4 crashes for `mini-swe-agent`).
 
-### 2. Code-aware repository retrieval
+Evaluated on **10 curated [Exercism Python](https://github.com/exercism/python) exercises × 3 trials = 90 runs** (`Qwen2.5-Coder-7B-Instruct-Q4_K_M`, `8192` ctx, `240s` timeout, shared `pytest` oracles):
 
-Use **ripgrep** for fast lexical search and **Tree-sitter** for syntax-aware parsing. Planned retrieval features include symbol lookup, lightweight repository maps, and targeted code snippets. The baseline will use bounded ripgrep search first; Tree-sitter enhancements come later, behind the same core repository tool interface.
+| Harness | Mode | Overall (30 runs) | Medium + Hard (21 runs) | Distinct Tasks | Timeouts |
+| --- | --- | ---: | ---: | ---: | ---: |
+| **Efficient Code Agent** *(this repo)* | Autonomous agent | **7 / 30 (23.3%)** | **5 / 21 (23.8%)** | **5 / 10** | **6** |
+| **`mini-swe-agent`** (`2.4.6`) | Autonomous agent | 7 / 30 (23.3%) | 2 / 21 (9.5%) | 4 / 10 | 14 |
+| **`aider`** (`0.86.2`)\* | Pre-loaded file editor | 12 / 30 (40.0%) | 9 / 21 (42.9%) | 4 / 10 | 3 |
 
-The aim is to supply the model with **the right code**, not the entire repository. Embedding-based retrieval is intentionally deferred until benchmarks justify the additional memory and complexity.
+\* *Aider's standard Exercism CLI receives the target filename upfront and rewrites whole 20–80 line files (`53.0s` avg), whereas autonomous agents discover files from the repo root. Follow-up PR #85 ergonomics (line-range edits, auto-SHA, compact `pytest`, dynamic `read_memory` gating) eliminated edit `conflict`/`invalid_arguments` errors in single-trial checks (`two-fer` in `30.0s`, `anagram` in `45.0s`).*
 
-### 3. Persistent task memory
+- Full 3-way tables (95% Wilson CIs, wall times, token counts, and PR #85 follow-up checks): **[Exercism 3-Way Comparison](docs/exercism-3way-comparison.md)**
+- Controlled 4-way internal ablations (`baseline`, `retrieval_only`, `clm_only`, `combined`): **[Final Benchmark Report](docs/final-benchmark-report.md)**
 
-Store inspectable, agent-editable notes in **Markdown**, initially including a working context and task findings. The model proposes working-note changes through `update_context`; the harness validates and persists them. Selected findings can be retrieved with bounded `read_memory` when needed. A separate `save_memory` tool is deferred.
+## Quickstart
 
-Full execution history stays separate from the condensed working context, so important evidence can be recovered without including every prior tool result in each prompt.
+**Prerequisites:** Python 3.9+ and [`ripgrep`](https://github.com/BurntSushi/ripgrep#installation) (`brew install ripgrep` on macOS).
 
-### 4. Verification-driven agent loop
+1. **Install:**
+   ```sh
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -e .
+   ```
 
-A Python runtime will coordinate repeated **inspect → plan → edit → test → evaluate** cycles. The agent may request repository searches, file reads and edits, or test commands. The harness executes approved tools and returns their results to the model.
+2. **Start any local OpenAI-compatible server** (pick one):
+   ```sh
+   # llama.cpp (default :8080)
+   llama-server -m /path/to/your-model.gguf --port 8080 -c 8192
 
-Planned protections include workspace boundaries, command validation, step/time budgets, bounded prompts, and explicit completion criteria. A model's completion proposal is distinct from runtime verification, and independent benchmark tests determine whether a coding task was actually resolved.
+   # or Ollama (:11434)
+   ollama serve
 
-### 5. Hardware-aware context budgeting
+   # or LM Studio (:1234) — start Local Server in the app
+   ```
 
-Constrain prompt sizes and retrieved-code volume for small quantized local models. Track task success alongside resource costs such as tokens, runtime, and peak memory. Inference will be provided by **llama.cpp**, rather than a custom inference engine.
+3. **Launch the Web UI:**
+   ```sh
+   harness ui
+   ```
+   Opens `http://127.0.0.1:8765`. Click the server pill (or Settings) to pick a preset and auto-detect your model—saved automatically to `~/.harness/config.json` (overridable via `HARNESS_BASE_URL` / `HARNESS_MODEL` or `--base-url` / `--model`).
 
-## Planned architecture
+### CLI Cheat Sheet
 
-```text
-CLI
- |
- v
-Python Agent Runtime
- |-- Context Manager (CLM-inspired edits + token limits)
- |-- Repository Retrieval (ripgrep + Tree-sitter)
- |-- Coding Tools (search, read, edit, test)
- |-- Persistent Memory (Markdown)
- |-- Run Tracing / Benchmarks (SQLite)
- |
- v
-llama.cpp local HTTP server
- |
- v
-Quantized coding LLM (GGUF)
+```sh
+harness ui                                                # Local web workspace
+harness session --repo . --retrieval-mode code_aware      # Multi-turn CLI session with working.md
+harness run "Fix failing tests" --repo . --coding         # Single coding task (ASK approvals)
+harness chat "Explain Python decorators concisely."       # Direct one-shot local chat
 ```
 
-The **Python harness calls the local model** through llama.cpp's HTTP interface. Model outputs may request tools or context edits; Python validates and performs those operations before the next inference call.
+See **[CLI Reference](docs/cli-reference.md)** for all flags, policies, and exit codes.
 
-## Technology stack
+## How It Works
 
-| Technology | Role |
+```mermaid
+flowchart LR
+    UI["Web UI / CLI<br/>(harness ui · session · run)"] --> RT["Agent Runtime<br/>(JSON-Schema Loop + Graduated Blocking)"]
+    RT --> CTX["Context Manager<br/>(working.md + TokenBudget)"]
+    RT --> RET["Code-Aware Retrieval<br/>(ripgrep + Tree-sitter)"]
+    RT --> TOOLS["Policy-Gated Tools<br/>(read · edit · pytest)"]
+    RT --> LLM["Local Model Server<br/>(llama.cpp · Ollama · LM Studio)"]
+    RT --> DB["SQLite Traces & Sessions"]
+```
+
+## Documentation
+
+| Document | Contents |
 | --- | --- |
-| Python | CLI, agent runtime, tool execution, context management |
-| llama.cpp + GGUF | Local inference for quantized coding models |
-| Tree-sitter | Syntax-aware code parsing and symbol extraction |
-| ripgrep (`rg`) | Fast repository and text search |
-| Markdown | Human-readable working context and persistent task notes |
-| SQLite | Supporting storage for run history, tracing, and benchmark measurements |
-| pytest | Automated tests and evaluation helpers |
+| [Implemented Code Map](docs/code-map.md) | Package modules, call flows, contracts, and test coverage |
+| [CLI Reference](docs/cli-reference.md) | Commands, flags, approval policies, and exit codes |
+| [Exercism 3-Way Comparison](docs/exercism-3way-comparison.md) | 90-run comparison vs. `mini-SWE-agent` and `Aider` |
+| [Final Benchmark Report](docs/final-benchmark-report.md) | 4-way internal ablations, memory measurements, and protocol |
+| [Architecture](docs/architecture.md) | System boundaries, design principles, and tradeoffs |
+| [Development Roadmap](docs/development-roadmap.md) | 7-phase implementation roadmap and acceptance criteria |
 
-**Interface:** CLI first, potentially CLI only. FastAPI and React are optional future additions, not part of the initial scope.
+## Development
 
-## Evaluation strategy
-
-The project will compare the **same local model on the same coding tasks** using:
-
-1. A minimal baseline harness.
-2. A harness with code-aware retrieval.
-3. A harness with proactive context editing.
-4. A combined optimized harness.
-
-Primary metric: **coding-task success rate**, evaluated with tests or task-specific checks.
-
-Secondary metrics: token usage, agent steps, elapsed time, and peak memory. Controlled comparisons and ablation tests will help identify which techniques provide measurable benefits. We also plan an external comparison with **mini-SWE-agent** on selected tasks, documenting differences in tools and policies. Locally evaluated tasks will not be presented as official SWE-bench scores.
-
-**No accuracy or efficiency improvements are claimed until benchmarks have been run.**
-
-## Development roadmap
-
-Development follows seven incremental phases. Each phase should deliver working behavior, tests, and an explicit acceptance criterion:
-
-1. **Local model foundation:** Connect Python to a quantized coding model through llama.cpp.
-2. **Read-only agent:** Implement a bounded autonomous loop with safe file inspection and prompt budgeting.
-3. **Coding and verification:** Add ripgrep search, file editing, and permitted test execution.
-4. **Baseline evaluation:** Record repeatable task outcomes, SQLite traces, token usage, timing, and memory measurements.
-5. **CLM-inspired context:** Add model-initiated working-note edits and context strategies.
-6. **Code-aware retrieval:** Add Tree-sitter symbol indexing, ranking, and compact repository maps.
-7. **Comparative benchmarking:** Evaluate baseline, retrieval-only, context-only, and combined variants, plus an external harness comparison.
-
-See [Development Roadmap](docs/development-roadmap.md) for implementation tasks, tests, and completion criteria. The roadmap is the authoritative source for implementation order.
-
-## Design documentation
-
-- [Architecture](docs/architecture.md) — system components, boundaries, and technology choices.
-- [Agent Runtime](docs/agent-runtime.md) — agent loop, actions, safeguards, and verification.
-- [Context and Memory](docs/context-and-memory.md) — editable working notes, prompt budgets, and memory strategies.
-- [Repository Retrieval](docs/repository-retrieval.md) — lexical search, Tree-sitter, and bounded code snippets.
-- [Benchmarking](docs/benchmarking.md) — task selection, fair comparisons, and evaluation metrics.
-- [Development Roadmap](docs/development-roadmap.md) — phased implementation plan and acceptance criteria.
-
-## Example CLI (proposed)
-
-```bash
-# Illustrative interface; not implemented yet
-harness run "Find and fix the failing authentication test" --repo ./example-project
+```sh
+pip install -e '.[dev]'
+python -m pytest
+ruff check src tests
+ruff format --check src tests
 ```
-
-The initial release will focus on a single local machine and repository, not distributed infrastructure or cloud deployment.
-
-## Project principles
-
-- **Measure task success first.** Speed matters, but correct solutions matter more.
-- **Keep the system inspectable.** Context edits, tool calls, and outcomes should be explainable and reproducible.
-- **Avoid unnecessary services.** Start with a local CLI, files, and SQLite.
-- **Build a baseline before optimizing.** Every added technique should justify its complexity.
 
 ## License
 

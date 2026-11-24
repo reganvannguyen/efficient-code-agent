@@ -1,0 +1,20 @@
+{
+  "task_id": "mem__invoice_tax_rounding",
+  "repo": "/Users/regannguyen/projects/efficient-code-agent/.runs/memory_lookup_repos/invoice_tax_rounding",
+  "base_commit": "73027a252260aeaff6a0925a37f149cd25bad90c",
+  "issue_text": "Invoice totals are incorrect when orders include discounts, tax-exempt categories, or currencies with custom rounding precision.\n\nInvestigate the codebase and fix the invoice total calculation so that:\n1. Per-line discounts are capped at the finance policy maximum and subtracted before computing subtotal and tax.\n2. Tax-exempt product categories are excluded from taxable subtotal.\n3. Subtotal, tax, and total are quantized according to the package currency and rounding policy.\n\nEnsure all tests pass.",
+  "oracle_tests": [
+    "tests/test_billing.py"
+  ],
+  "oracle_tier": "local_full",
+  "agent_test_targets": [
+    "tests/test_billing.py"
+  ],
+  "metadata": {
+    "source": "local/memory_lookup",
+    "slug": "invoice_tax_rounding",
+    "difficulty": "medium",
+    "test_file": "tests/test_billing.py",
+    "file_count": 16
+  }
+}

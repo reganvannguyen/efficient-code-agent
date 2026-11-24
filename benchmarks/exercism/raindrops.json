@@ -1,0 +1,21 @@
+{
+  "task_id": "exercism__raindrops",
+  "repo": "/Users/regannguyen/projects/efficient-code-agent/.runs/exercism_repos/raindrops",
+  "base_commit": "65e742e9a4f9b68b2391f0bdfff062e950b7acf6",
+  "issue_text": "Implement the Python exercise 'raindrops' in `raindrops.py` so that all tests in `raindrops_test.py` pass.\n\n# Introduction\n\nRaindrops is a slightly more complex version of the FizzBuzz challenge, a classic interview question.\n\n# Instructions\n\nYour task is to convert a number into its corresponding raindrop sounds.\n\nIf a given number:\n\n- is divisible by 3, add \"Pling\" to the result.\n- is divisible by 5, add \"Plang\" to the result.\n- is divisible by 7, add \"Plong\" to the result.\n- **is not** divisible by 3, 5, or 7, the result should be the number as a string.\n\n## Examples\n\n- 28 is divisible by 7, but not 3 or 5, so the result would be `\"Plong\"`.\n- 30 is divisible by 3 and 5, but not 7, so the result would be `\"PlingPlang\"`.\n- 34 is not divisible by 3, 5, or 7, so the result would be `\"34\"`.\n\n~~~~exercism/note\nA common way to test if one number is evenly divisible by another is to compare the [remainder][remainder] or [modulus][modulo] to zero.\nMost languages provide operators or functions for one (or both) of these.\n\n[remainder]: https://exercism.org/docs/programming/operators/remainder\n[modulo]: https://en.wikipedia.org/wiki/Modulo_operation\n~~~~\n\n# Instructions append\n\n## How this Exercise is Structured in Python\n\nThis exercise is best solved with Python's `%` ([modulo][modulo]) operator, which returns the remainder of positive integer division.\nIt has a method equivalent, `operator.mod()` in the [operator module][operator-mod].\n\n\nPython also offers additional 'remainder' methods in the [math module][math-module].\n[`math.fmod()`][fmod] behaves like `%`, but operates on floats.\n[`math.remainder()`][remainder] implements a \"step closest to zero\" algorithm for the remainder of division.\nWhile we encourage you to get familiar with these methods, neither of these will exactly match the result of `%`, and are not recommended for use with this exercise.\n\nThe built-in function [`divmod()`][divmod] will also give a remainder than matches `%` if used with two positive integers, but returns a `tuple` that needs to be unpacked.\n\n[divmod]: https://docs.python.org/3/library/functions.html#divmod\n[fmod]: https://docs.python.org/3/library/math.html#math.fmod\n[math-module]: https://docs.python.org/3/library/math.html\n[modulo]: https://www.programiz.com/python-programming/operators#arithmetic\n[operator-mod]: https://docs.python.org/3/library/operator.html#operator.mod\n[remainder]: https://docs.python.org/3/library/math.html#math.remainder",
+  "oracle_tests": [
+    "raindrops_test.py"
+  ],
+  "oracle_tier": "local_full",
+  "agent_test_targets": [
+    "raindrops_test.py"
+  ],
+  "metadata": {
+    "source": "exercism/python",
+    "upstream_commit": "479f11b44b02337b0413e805b948491c2179615a",
+    "slug": "raindrops",
+    "difficulty": "easy",
+    "solution_file": "raindrops.py",
+    "test_file": "raindrops_test.py"
+  }
+}
